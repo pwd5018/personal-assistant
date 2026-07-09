@@ -28,6 +28,10 @@ export const config = {
     process.env.EXTERNAL_LOOKUP_DECISION_MODEL ||
     process.env.OPENAI_SUMMARY_MODEL ||
     "gpt-4.1-nano",
+  externalLookupCompositionModel:
+    process.env.EXTERNAL_LOOKUP_COMPOSITION_MODEL ||
+    process.env.OPENAI_SUMMARY_MODEL ||
+    "gpt-4.1-nano",
   externalLookupModel: process.env.EXTERNAL_LOOKUP_MODEL || process.env.OPENAI_CHAT_MODEL || "gpt-4.1-mini",
   externalLookupSearchContextSize: normalizeSearchContextSize(
     process.env.EXTERNAL_LOOKUP_SEARCH_CONTEXT_SIZE || "medium"

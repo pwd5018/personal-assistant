@@ -25,6 +25,16 @@ const FALLBACK_LOOKUP_SIGNALS = [
   },
 ];
 
+const ALLOWED_QUESTION_KINDS = new Set([
+  "weather",
+  "market_price",
+  "hours",
+  "news",
+  "sports",
+  "general_chat",
+  "other",
+]);
+
 const SENSITIVE_PATTERNS = [
   {
     label: "email",
@@ -78,11 +88,16 @@ export function fallbackExternalLookupDecision(question) {
   const matchedSignals = FALLBACK_LOOKUP_SIGNALS
     .filter((rule) => rule.pattern.test(normalized))
     .map((rule) => rule.label);
+  const questionKind = inferFallbackQuestionKind(normalized, matchedSignals);
 
   return {
     needed: matchedSignals.length > 0,
     reason: matchedSignals.length > 0 ? "current_or_source_sensitive_question" : "model_only_is_probably_enough",
     matchedSignals,
+    questionKind,
+    answerMode: questionKind === "general_chat" ? "model_only" : "lookup_or_model",
+    needsResolution: questionKind === "weather" || questionKind === "hours",
+    canUseLocalMemoryForResolution: matchedSignals.length > 0,
     decisionSource: "fallback",
     confidence: matchedSignals.length > 0 ? 0.7 : 0.6,
   };
@@ -109,11 +124,25 @@ export function normalizeLookupDecision(rawDecision, fallbackDecision) {
       ? rawDecision.decisionSource
       : fallback.decisionSource;
   const confidence = normalizeConfidence(rawDecision.confidence, fallback.confidence);
+  const questionKind = normalizeQuestionKind(rawDecision.questionKind, fallback.questionKind);
+  const answerMode = normalizeAnswerMode(rawDecision.answerMode, fallback.answerMode);
+  const needsResolution =
+    typeof rawDecision.needsResolution === "boolean"
+      ? rawDecision.needsResolution
+      : fallback.needsResolution;
+  const canUseLocalMemoryForResolution =
+    typeof rawDecision.canUseLocalMemoryForResolution === "boolean"
+      ? rawDecision.canUseLocalMemoryForResolution
+      : fallback.canUseLocalMemoryForResolution;
 
   return {
     needed,
     reason,
     matchedSignals,
+    questionKind,
+    answerMode,
+    needsResolution,
+    canUseLocalMemoryForResolution,
     decisionSource,
     confidence,
   };
@@ -157,6 +186,10 @@ export function buildSafeLookupQuery(question, privacyMode = "strict", lookupDec
     lookupNeeded: normalizedDecision.needed,
     reason: normalizedDecision.reason,
     matchedSignals: normalizedDecision.matchedSignals,
+    questionKind: normalizedDecision.questionKind,
+    answerMode: normalizedDecision.answerMode,
+    needsResolution: normalizedDecision.needsResolution,
+    canUseLocalMemoryForResolution: normalizedDecision.canUseLocalMemoryForResolution,
     decisionSource: normalizedDecision.decisionSource,
     decisionConfidence: normalizedDecision.confidence,
     privacyMode: normalizedMode,
@@ -181,10 +214,61 @@ function normalizeLookupReason(value, fallback) {
 }
 
 function normalizeConfidence(value, fallback) {
+  if (value === null || value === undefined || value === "") {
+    return fallback;
+  }
+
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
     return fallback;
   }
 
   return Math.max(0, Math.min(1, numeric));
+}
+
+function normalizeQuestionKind(value, fallback) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+
+  return ALLOWED_QUESTION_KINDS.has(normalized) ? normalized : fallback;
+}
+
+function normalizeAnswerMode(value, fallback) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+
+  return ["model_only", "lookup_or_model", "lookup_required"].includes(normalized) ? normalized : fallback;
+}
+
+function inferFallbackQuestionKind(question, matchedSignals) {
+  const normalizedQuestion = String(question || "").toLowerCase();
+  if (/\b(hi|hello|hey|how are you|thanks|thank you)\b/.test(normalizedQuestion)) {
+    return "general_chat";
+  }
+
+  if (matchedSignals.includes("weather")) {
+    return "weather";
+  }
+
+  if (matchedSignals.includes("markets")) {
+    return "market_price";
+  }
+
+  if (matchedSignals.includes("hours_or_availability")) {
+    return "hours";
+  }
+
+  if (matchedSignals.includes("sports")) {
+    return "sports";
+  }
+
+  if (matchedSignals.includes("news")) {
+    return "news";
+  }
+
+  return matchedSignals.length ? "other" : "general_chat";
 }

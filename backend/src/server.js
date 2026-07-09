@@ -356,6 +356,7 @@ async function runAssistantTurn({
     });
 
     let assistantText = "";
+    let spokenAnswerText = "";
     let providerMetadata = buildProviderMetadata();
     let providerUsage = null;
 
@@ -369,7 +370,8 @@ async function runAssistantTurn({
           signal: abortController.signal,
         });
 
-        assistantText = lookupResult.text;
+        assistantText = lookupResult.displayText || lookupResult.text;
+        spokenAnswerText = lookupResult.spokenText || assistantText;
         providerUsage = lookupResult.usage;
         timings.chatFirstToken = new Date().toISOString();
         sendEvent({ type: "text-delta", delta: assistantText, turnId });
@@ -383,10 +385,26 @@ async function runAssistantTurn({
             contextMode: lookupPlan.contextMode,
             safeQuery: lookupPlan.query,
             queryEnrichment: lookupPlan.queryEnrichment,
+            resolutionStatus: lookupPlan.resolutionStatus,
+            resolutionConfidence: lookupPlan.resolutionConfidence,
             matchedSignals: lookupPlan.matchedSignals,
+            questionKind: lookupPlan.questionKind,
+            answerMode: lookupPlan.answerMode,
+            needsResolution: lookupPlan.needsResolution,
+            canUseLocalMemoryForResolution: lookupPlan.canUseLocalMemoryForResolution,
             decisionSource: lookupPlan.decisionSource,
             decisionConfidence: lookupPlan.decisionConfidence,
             redactions: lookupPlan.redactions,
+            answerStatus: lookupResult.answerStatus || "answered",
+            evidenceStatus: lookupResult.evidence?.evidenceStatus || null,
+            evidenceConfidence: lookupResult.evidence?.confidence ?? null,
+            supportsDirectAnswer: lookupResult.evidence?.supportsDirectAnswer ?? null,
+            retrievalStatus: lookupResult.extraction?.retrievalStatus || null,
+            answerExtractability: lookupResult.extraction?.answerExtractability || null,
+            resultTopicMatch: lookupResult.extraction?.resultTopicMatch || null,
+            displayText: assistantText,
+            spokenText: spokenAnswerText,
+            showSources: lookupResult.showSources !== false,
             citations: lookupResult.citations,
             webSearches: lookupResult.webSearches,
           },
@@ -400,7 +418,13 @@ async function runAssistantTurn({
             contextMode: lookupPlan.contextMode,
             safeQuery: lookupPlan.query,
             queryEnrichment: lookupPlan.queryEnrichment,
+            resolutionStatus: lookupPlan.resolutionStatus,
+            resolutionConfidence: lookupPlan.resolutionConfidence,
             matchedSignals: lookupPlan.matchedSignals,
+            questionKind: lookupPlan.questionKind,
+            answerMode: lookupPlan.answerMode,
+            needsResolution: lookupPlan.needsResolution,
+            canUseLocalMemoryForResolution: lookupPlan.canUseLocalMemoryForResolution,
             decisionSource: lookupPlan.decisionSource,
             decisionConfidence: lookupPlan.decisionConfidence,
             redactions: lookupPlan.redactions,
@@ -421,7 +445,13 @@ async function runAssistantTurn({
           contextMode: lookupPlan.contextMode,
           safeQuery: lookupPlan.query,
           queryEnrichment: lookupPlan.queryEnrichment,
+          resolutionStatus: lookupPlan.resolutionStatus,
+          resolutionConfidence: lookupPlan.resolutionConfidence,
           matchedSignals: lookupPlan.matchedSignals,
+          questionKind: lookupPlan.questionKind,
+          answerMode: lookupPlan.answerMode,
+          needsResolution: lookupPlan.needsResolution,
+          canUseLocalMemoryForResolution: lookupPlan.canUseLocalMemoryForResolution,
           decisionSource: lookupPlan.decisionSource,
           decisionConfidence: lookupPlan.decisionConfidence,
           redactions: lookupPlan.redactions,
@@ -453,10 +483,11 @@ async function runAssistantTurn({
     let audioBase64 = null;
     let spokenText = "";
     let ttsFailure = null;
+    const speechText = spokenAnswerText || assistantText;
 
     try {
       const speech = await provider.synthesizeSpeech({
-        text: assistantText,
+        text: speechText,
         signal: abortController.signal,
       });
 
@@ -508,6 +539,8 @@ async function runAssistantTurn({
         sessionId,
         transcriptText,
         assistantText,
+        displayText: assistantText,
+        spokenAnswerText: speechText,
         timings,
         tokenUsage,
         provider: providerMetadata,
