@@ -201,8 +201,8 @@ Exit criteria:
 
 Status:
 
-- In progress
-- First live slice uses backend-mediated OpenAI web search with strict privacy-first query construction, source capture, and model-only fallback when lookup fails
+- Done
+- Validated through live-turn stabilization across strict vs balanced privacy modes, source-aware answer shaping, remembered-place resolution, preview/debug reliability, memory-candidate suppression, and backend regression coverage for lookup routing and metadata behavior
 
 ## Milestone 9: External Lookup Freshness and Caching
 

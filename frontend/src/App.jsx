@@ -1897,9 +1897,14 @@ const AVATAR_STATES = {
 
 function describeLiveLookup(voiceState) {
   const lookupStatus = voiceState.provider?.lookup?.status;
+  const cacheStatus = voiceState.provider?.lookup?.cache?.status;
   if (lookupStatus === "used") {
     const citationCount = voiceState.provider?.lookup?.citations?.length || 0;
-    return citationCount ? `Current sources used (${citationCount})` : "Current sources used";
+    const sourceLabel = citationCount ? `Current sources used (${citationCount})` : "Current sources used";
+    if (cacheStatus === "hit") {
+      return `${sourceLabel}, cached retrieval`;
+    }
+    return sourceLabel;
   }
 
   if (lookupStatus === "failed_then_fell_back") {
@@ -1924,7 +1929,14 @@ function describeStoredTurnLookup(turn) {
 
   if (lookup.status === "used") {
     const citationCount = lookup.citations?.length || 0;
-    return citationCount ? `Current sources used (${citationCount})` : "Current sources used";
+    const sourceLabel = citationCount ? `Current sources used (${citationCount})` : "Current sources used";
+    if (lookup.cache?.status === "hit") {
+      return `${sourceLabel}, shaped from cached retrieval`;
+    }
+    if (lookup.cache?.status === "stored" || lookup.cache?.status === "miss_then_stored") {
+      return `${sourceLabel}, fresh retrieval cached`;
+    }
+    return sourceLabel;
   }
 
   if (lookup.status === "failed_then_fell_back") {

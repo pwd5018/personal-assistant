@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js",
-    "build": "node --check src/server.js"
+    "build": "node --check src/server.js",
+    "test": "node --test --test-isolation=none"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",

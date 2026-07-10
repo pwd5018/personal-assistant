@@ -2,15 +2,26 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { config } from "./config.js";
 import { buildContextPackage } from "./context.js";
-import { buildExternalLookupPlan, performExternalLookup } from "./externalLookupService.js";
+import {
+  buildExternalLookupPlan,
+  composeExternalLookupResult,
+  performExternalLookupRetrieval,
+} from "./externalLookupService.js";
+import {
+  buildLookupCacheDescriptor,
+  buildLookupCacheEntry,
+  getLookupCacheAgeMs,
+  isLookupCacheEntryExpired,
+} from "./lookupCache.js";
 import { memoryScheduler } from "./memoryScheduler.js";
 import { provider } from "./provider/index.js";
 import { store } from "./store.js";
 import { summaryScheduler } from "./summaryScheduler.js";
 
-const app = Fastify({ logger: true });
+export const app = Fastify({ logger: true });
 const activeTurns = new Map();
 
 await app.register(cors, {
@@ -354,17 +365,117 @@ async function runAssistantTurn({
       sendEvent({ type: "status", phase: "researching", turnId });
 
       try {
-        const lookupResult = await performExternalLookup({
+        const cacheDescriptor = buildLookupCacheDescriptor(lookupPlan);
+        let cacheMetadata = {
+          status: cacheDescriptor.cacheable ? "miss" : "skipped",
+          reason: cacheDescriptor.cacheable ? "not_checked" : cacheDescriptor.reason,
+          key: cacheDescriptor.key || "",
+          keyParts: cacheDescriptor.keyParts,
+          ttlMs: cacheDescriptor.ttlMs || 0,
+          ageMs: null,
+          expiresAt: null,
+          storedAt: null,
+          tier: null,
+        };
+        let lookupArtifacts = null;
+
+        if (cacheDescriptor.cacheable) {
+          store.purgeExpiredLookupCacheEntries();
+          const cachedEntry = store.getLookupCacheEntry(cacheDescriptor.key);
+
+          if (cachedEntry && !isLookupCacheEntryExpired(cachedEntry)) {
+            store.touchLookupCacheEntry(cacheDescriptor.key);
+            cacheMetadata = {
+              ...cacheMetadata,
+              status: "hit",
+              reason: "fresh_cached_artifacts",
+              ageMs: getLookupCacheAgeMs(cachedEntry),
+              expiresAt: cachedEntry.expires_at,
+              storedAt: cachedEntry.created_at,
+              tier: cachedEntry.extraction_json?.answerExtractability || null,
+            };
+            lookupArtifacts = {
+              rawText: cachedEntry.retrieval_json?.rawText || "",
+              citations: cachedEntry.citations_json || [],
+              webSearches: cachedEntry.web_searches_json || [],
+              usage: null,
+            };
+          } else if (cachedEntry) {
+            cacheMetadata = {
+              ...cacheMetadata,
+              status: "expired",
+              reason: "expired_cached_artifacts",
+              ageMs: getLookupCacheAgeMs(cachedEntry),
+              expiresAt: cachedEntry.expires_at,
+              storedAt: cachedEntry.created_at,
+            };
+          } else {
+            cacheMetadata.reason = "no_cached_artifacts";
+          }
+        }
+
+        if (!lookupArtifacts) {
+          const freshArtifacts = await performExternalLookupRetrieval({
+            question: transcriptText,
+            lookupPlan,
+            signal: abortController.signal,
+          });
+          providerUsage = freshArtifacts.usage;
+          lookupArtifacts = freshArtifacts;
+          if (cacheDescriptor.cacheable) {
+            cacheMetadata = {
+              ...cacheMetadata,
+              status: cacheMetadata.status === "expired" ? "expired_then_refreshed" : "miss_then_stored",
+              reason: "fresh_lookup",
+            };
+          }
+        }
+
+        const lookupResult = await composeExternalLookupResult({
           question: transcriptText,
           lookupPlan,
-          signal: abortController.signal,
+          artifacts: lookupArtifacts,
         });
 
         assistantText = lookupResult.displayText || lookupResult.text;
         spokenAnswerText = lookupResult.spokenText || assistantText;
-        providerUsage = lookupResult.usage;
         timings.chatFirstToken = new Date().toISOString();
         sendEvent({ type: "text-delta", delta: assistantText, turnId });
+
+        if (cacheMetadata.status !== "hit") {
+          const cacheEntry = buildLookupCacheEntry({
+            lookupPlan,
+            artifacts: lookupArtifacts,
+            evidence: lookupResult.evidence,
+            extraction: lookupResult.extraction,
+            answerStatus: lookupResult.answerStatus,
+          });
+          if (cacheEntry) {
+            store.upsertLookupCacheEntry(cacheEntry);
+            cacheMetadata = {
+              ...cacheMetadata,
+              status: "stored",
+              reason: cacheEntry.cache_policy.reason,
+              ttlMs: cacheEntry.cache_policy.ttlMs,
+              ageMs: 0,
+              expiresAt: cacheEntry.expires_at,
+              storedAt: cacheEntry.created_at,
+              tier: cacheEntry.cache_policy.tier,
+            };
+          } else if (cacheDescriptor.cacheable) {
+            cacheMetadata = {
+              ...cacheMetadata,
+              status: "skipped",
+              reason: "result_not_cacheable",
+            };
+          }
+        } else if (cacheDescriptor.cacheable) {
+          cacheMetadata = {
+            ...cacheMetadata,
+            reason: "fresh_cached_artifacts",
+          };
+        }
+
         providerMetadata = buildProviderMetadata({
           api: "responses",
           chatModel: config.externalLookupModel,
@@ -397,9 +508,12 @@ async function runAssistantTurn({
             showSources: lookupResult.showSources !== false,
             citations: lookupResult.citations,
             webSearches: lookupResult.webSearches,
+            retrievalSource: cacheMetadata.status === "hit" ? "cache" : "fresh_lookup",
+            cache: cacheMetadata,
           },
         });
       } catch (error) {
+        const cacheDescriptor = buildLookupCacheDescriptor(lookupPlan);
         providerMetadata = buildProviderMetadata({
           lookup: {
             status: "failed_then_fell_back",
@@ -419,6 +533,13 @@ async function runAssistantTurn({
             decisionConfidence: lookupPlan.decisionConfidence,
             redactions: lookupPlan.redactions,
             error: error.message,
+            cache: {
+              status: cacheDescriptor.cacheable ? "lookup_failed" : "skipped",
+              reason: error.message,
+              key: cacheDescriptor.key || "",
+              keyParts: cacheDescriptor.keyParts,
+              ttlMs: cacheDescriptor.ttlMs || 0,
+            },
           },
         });
       }
@@ -445,6 +566,13 @@ async function runAssistantTurn({
           decisionSource: lookupPlan.decisionSource,
           decisionConfidence: lookupPlan.decisionConfidence,
           redactions: lookupPlan.redactions,
+          cache: {
+            status: "not_applicable",
+            reason: "lookup_not_used",
+            key: "",
+            keyParts: null,
+            ttlMs: 0,
+          },
         },
       });
     }
@@ -557,10 +685,19 @@ async function runAssistantTurn({
   }
 }
 
-app.listen({ port: config.port, host: config.host }).catch((error) => {
-  app.log.error(error);
-  process.exit(1);
-});
+export async function startServer() {
+  return app.listen({ port: config.port, host: config.host });
+}
+
+const isMainModule =
+  process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
+
+if (isMainModule) {
+  startServer().catch((error) => {
+    app.log.error(error);
+    process.exit(1);
+  });
+}
 
 function buildStoredTurn({
   id,

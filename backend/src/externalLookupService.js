@@ -83,6 +83,22 @@ export async function performExternalLookup({ question, lookupPlan, signal }) {
   });
 }
 
+export async function performExternalLookupRetrieval({ question, lookupPlan, signal }) {
+  return provider.fetchExternalLookupArtifacts({
+    question,
+    lookupPlan,
+    signal,
+  });
+}
+
+export async function composeExternalLookupResult({ question, lookupPlan, artifacts }) {
+  return provider.composeExternalLookupResult({
+    question,
+    lookupPlan,
+    ...artifacts,
+  });
+}
+
 function buildLookupContext(contextPackage, privacyMode, lookupDecision) {
   if (privacyMode !== "balanced") {
     return {

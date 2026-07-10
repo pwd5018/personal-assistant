@@ -54,6 +54,24 @@ db.exec(`
     recommendation TEXT,
     recommendation_reason TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS lookup_cache (
+    cache_key TEXT PRIMARY KEY,
+    question_kind TEXT NOT NULL,
+    privacy_mode TEXT NOT NULL,
+    answer_mode TEXT NOT NULL,
+    resolution_status TEXT NOT NULL,
+    retrieval_json TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    extraction_json TEXT NOT NULL,
+    citations_json TEXT NOT NULL,
+    web_searches_json TEXT NOT NULL,
+    usage_json TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_used_at TEXT,
+    hit_count INTEGER NOT NULL DEFAULT 0
+  );
 `);
 
 const ensureSummaryRow = db.prepare(`
@@ -68,6 +86,20 @@ ensureColumn("approved_facts", "category", "TEXT");
 ensureColumn("candidate_facts", "category", "TEXT");
 ensureColumn("candidate_facts", "recommendation", "TEXT");
 ensureColumn("candidate_facts", "recommendation_reason", "TEXT");
+ensureColumn("lookup_cache", "question_kind", "TEXT NOT NULL DEFAULT 'other'");
+ensureColumn("lookup_cache", "privacy_mode", "TEXT NOT NULL DEFAULT 'strict'");
+ensureColumn("lookup_cache", "answer_mode", "TEXT NOT NULL DEFAULT 'lookup_or_model'");
+ensureColumn("lookup_cache", "resolution_status", "TEXT NOT NULL DEFAULT 'unresolved'");
+ensureColumn("lookup_cache", "retrieval_json", "TEXT NOT NULL DEFAULT '{}'");
+ensureColumn("lookup_cache", "evidence_json", "TEXT NOT NULL DEFAULT '{}'");
+ensureColumn("lookup_cache", "extraction_json", "TEXT NOT NULL DEFAULT '{}'");
+ensureColumn("lookup_cache", "citations_json", "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn("lookup_cache", "web_searches_json", "TEXT NOT NULL DEFAULT '[]'");
+ensureColumn("lookup_cache", "usage_json", "TEXT");
+ensureColumn("lookup_cache", "created_at", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("lookup_cache", "expires_at", "TEXT NOT NULL DEFAULT ''");
+ensureColumn("lookup_cache", "last_used_at", "TEXT");
+ensureColumn("lookup_cache", "hit_count", "INTEGER NOT NULL DEFAULT 0");
 
 export function getDatabase() {
   return db;

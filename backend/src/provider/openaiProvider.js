@@ -98,6 +98,28 @@ export class OpenAiProvider {
   async answerWithExternalLookup({ question, lookupPlan, signal }) {
     this.assertConfigured();
 
+    const artifacts = await this.fetchExternalLookupArtifacts({
+      question,
+      lookupPlan,
+      signal,
+    });
+    const result = await this.composeExternalLookupResult({
+      question,
+      lookupPlan,
+      ...artifacts,
+    });
+
+    return {
+      ...result,
+      usage: artifacts.usage || null,
+      citations: artifacts.citations,
+      webSearches: artifacts.webSearches,
+    };
+  }
+
+  async fetchExternalLookupArtifacts({ question, lookupPlan, signal }) {
+    this.assertConfigured();
+
     const response = await this.client.responses.create(
       {
         model: config.externalLookupModel,
@@ -116,19 +138,34 @@ export class OpenAiProvider {
       { signal }
     );
 
-    const citations = extractResponseCitations(response);
-    const webSearches = extractWebSearches(response);
+    return {
+      rawText: extractResponseText(response),
+      citations: extractResponseCitations(response),
+      webSearches: extractWebSearches(response),
+      usage: response.usage || null,
+    };
+  }
+
+  async composeExternalLookupResult({
+    question,
+    lookupPlan,
+    rawText,
+    citations = [],
+    webSearches = [],
+  }) {
+    this.assertConfigured();
+
     const evidence = await gradeLookupEvidence.call(this, {
       question,
       lookupPlan,
-      rawText: extractResponseText(response),
+      rawText,
       citations,
       webSearches,
     });
     const extraction = await extractLookupAnswerData.call(this, {
       question,
       lookupPlan,
-      rawText: extractResponseText(response),
+      rawText,
       citations,
       webSearches,
       evidence,
@@ -142,7 +179,7 @@ export class OpenAiProvider {
     const composition = await composeExternalLookupResponse.call(this, {
       question,
       lookupPlan,
-      rawText: extractResponseText(response),
+      rawText,
       citations,
       webSearches,
       evidence: normalizedEvidence,
@@ -157,7 +194,6 @@ export class OpenAiProvider {
       showSources: composition.showSources,
       evidence: normalizedEvidence,
       extraction,
-      usage: response.usage || null,
       citations,
       webSearches,
     };
@@ -2310,3 +2346,10 @@ function isEntityLikePlaceLabel(value) {
 
   return true;
 }
+
+export const __testables = {
+  finalizeCandidateFacts,
+  reconcileLookupEvidence,
+  determineLookupAnswerStatus,
+  buildLookupAnswerFallback,
+};

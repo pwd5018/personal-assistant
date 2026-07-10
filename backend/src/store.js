@@ -158,6 +158,79 @@ const recentTranscriptWindowStatement = db.prepare(`
   LIMIT ?
 `);
 
+const lookupCacheByKeyStatement = db.prepare(`
+  SELECT *
+  FROM lookup_cache
+  WHERE cache_key = ?
+`);
+
+const upsertLookupCacheStatement = db.prepare(`
+  INSERT INTO lookup_cache (
+    cache_key,
+    question_kind,
+    privacy_mode,
+    answer_mode,
+    resolution_status,
+    retrieval_json,
+    evidence_json,
+    extraction_json,
+    citations_json,
+    web_searches_json,
+    usage_json,
+    created_at,
+    expires_at,
+    last_used_at,
+    hit_count
+  ) VALUES (
+    @cache_key,
+    @question_kind,
+    @privacy_mode,
+    @answer_mode,
+    @resolution_status,
+    @retrieval_json,
+    @evidence_json,
+    @extraction_json,
+    @citations_json,
+    @web_searches_json,
+    @usage_json,
+    @created_at,
+    @expires_at,
+    @last_used_at,
+    @hit_count
+  )
+  ON CONFLICT(cache_key) DO UPDATE SET
+    question_kind = excluded.question_kind,
+    privacy_mode = excluded.privacy_mode,
+    answer_mode = excluded.answer_mode,
+    resolution_status = excluded.resolution_status,
+    retrieval_json = excluded.retrieval_json,
+    evidence_json = excluded.evidence_json,
+    extraction_json = excluded.extraction_json,
+    citations_json = excluded.citations_json,
+    web_searches_json = excluded.web_searches_json,
+    usage_json = excluded.usage_json,
+    created_at = excluded.created_at,
+    expires_at = excluded.expires_at,
+    last_used_at = excluded.last_used_at,
+    hit_count = excluded.hit_count
+`);
+
+const touchLookupCacheStatement = db.prepare(`
+  UPDATE lookup_cache
+  SET last_used_at = ?, hit_count = hit_count + 1
+  WHERE cache_key = ?
+`);
+
+const purgeExpiredLookupCacheStatement = db.prepare(`
+  DELETE FROM lookup_cache
+  WHERE expires_at != ''
+    AND datetime(expires_at) <= datetime(?)
+`);
+
+const clearLookupCacheStatement = db.prepare(`
+  DELETE FROM lookup_cache
+`);
+
 export const store = {
   insertTurn(turn) {
     insertTurnStatement.run(turn);
@@ -301,6 +374,43 @@ export const store = {
   getRecentTranscriptWindow(limit) {
     return recentTranscriptWindowStatement.all(limit).reverse();
   },
+
+  getLookupCacheEntry(cacheKey) {
+    const row = lookupCacheByKeyStatement.get(cacheKey);
+    return row ? parseLookupCacheRow(row) : null;
+  },
+
+  upsertLookupCacheEntry(entry) {
+    upsertLookupCacheStatement.run({
+      cache_key: entry.cache_key,
+      question_kind: entry.question_kind,
+      privacy_mode: entry.privacy_mode,
+      answer_mode: entry.answer_mode,
+      resolution_status: entry.resolution_status,
+      retrieval_json: entry.retrieval_json,
+      evidence_json: entry.evidence_json,
+      extraction_json: entry.extraction_json,
+      citations_json: entry.citations_json,
+      web_searches_json: entry.web_searches_json,
+      usage_json: entry.usage_json,
+      created_at: entry.created_at,
+      expires_at: entry.expires_at,
+      last_used_at: entry.last_used_at,
+      hit_count: entry.hit_count,
+    });
+  },
+
+  touchLookupCacheEntry(cacheKey, usedAt = new Date().toISOString()) {
+    touchLookupCacheStatement.run(usedAt, cacheKey);
+  },
+
+  purgeExpiredLookupCacheEntries(nowIso = new Date().toISOString()) {
+    return purgeExpiredLookupCacheStatement.run(nowIso).changes;
+  },
+
+  clearLookupCache() {
+    clearLookupCacheStatement.run();
+  },
 };
 
 function parseTurnRow(row) {
@@ -324,6 +434,18 @@ function safeParseJson(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function parseLookupCacheRow(row) {
+  return {
+    ...row,
+    retrieval_json: safeParseJson(row.retrieval_json, {}),
+    evidence_json: safeParseJson(row.evidence_json, {}),
+    extraction_json: safeParseJson(row.extraction_json, {}),
+    citations_json: safeParseJson(row.citations_json, []),
+    web_searches_json: safeParseJson(row.web_searches_json, []),
+    usage_json: safeParseJson(row.usage_json, null),
+  };
 }
 
 function runInTransaction(work, ...args) {
