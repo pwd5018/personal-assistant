@@ -287,31 +287,68 @@ async function resolveLocationHint({
 
   const candidates = [
     ...(lookupContext?.approvedFacts || []).map((fact) => parseLocationFact(fact, "balanced_approved_fact")),
-    ...((contextPackage?.approvedFacts || []).map((fact) => parseLocationFact(fact, "approved_fact"))),
   ].filter(Boolean);
 
-  const recentTurnMatches = (contextPackage?.recentTurns || [])
+  const recentTurnMatches = (lookupContext?.recentTurns || [])
     .slice()
     .reverse()
     .map((turn) => parseLocationTurn(turn))
     .filter(Boolean);
   candidates.push(...recentTurnMatches);
+  const uniqueCandidates = dedupeLocationCandidates(candidates);
 
-  const heuristicMatch = findBestLocationCandidate(normalizedQuestion, candidates);
+  const heuristicMatch = findBestLocationCandidate(normalizedQuestion, uniqueCandidates);
+  const defaultMatch = findDefaultLocationCandidate(uniqueCandidates, lookupDecision, heuristicMatch);
   if (!provider.isConfigured() || !lookupDecision?.canUseLocalMemoryForResolution) {
-    return heuristicMatch;
+    return heuristicMatch || defaultMatch;
   }
 
   try {
     const modelMatch = await provider.resolveLookupEntity({
       question: normalizedQuestion,
       questionKind: lookupDecision?.questionKind || "other",
-      candidates,
+      candidates: uniqueCandidates,
     });
-    return selectResolvedLocation(modelMatch, candidates) || heuristicMatch;
+    return selectResolvedLocation(modelMatch, uniqueCandidates) || heuristicMatch || defaultMatch;
   } catch {
-    return heuristicMatch;
+    return heuristicMatch || defaultMatch;
   }
+}
+
+function dedupeLocationCandidates(candidates) {
+  const byKey = new Map();
+
+  for (const candidate of candidates || []) {
+    const entity = String(candidate?.entity || "").trim();
+    const location = String(candidate?.location || "").trim();
+    if (!entity || !location) {
+      continue;
+    }
+
+    const key = `${normalizeEntity(entity)}::${location.toLowerCase()}`;
+    const existing = byKey.get(key);
+    if (!existing || getLocationSourcePriority(candidate.source) > getLocationSourcePriority(existing.source)) {
+      byKey.set(key, candidate);
+    }
+  }
+
+  return [...byKey.values()];
+}
+
+function getLocationSourcePriority(source = "") {
+  if (/balanced_approved_fact/.test(source)) {
+    return 4;
+  }
+
+  if (/approved_fact/.test(source)) {
+    return 3;
+  }
+
+  if (/recent_turn/.test(source)) {
+    return 2;
+  }
+
+  return 1;
 }
 
 function parseLocationFact(factText, source) {
@@ -369,6 +406,33 @@ function findBestLocationCandidate(question, candidates) {
   }
 
   return null;
+}
+
+function findDefaultLocationCandidate(candidates, lookupDecision, explicitMatch) {
+  if (explicitMatch) {
+    return null;
+  }
+
+  if (!lookupDecision?.canUseLocalMemoryForResolution) {
+    return null;
+  }
+
+  if (!["weather", "hours"].includes(lookupDecision?.questionKind || "")) {
+    return null;
+  }
+
+  const approvedCandidates = (candidates || []).filter((candidate) =>
+    /approved_fact/.test(candidate?.source || "")
+  );
+  if (approvedCandidates.length !== 1) {
+    return null;
+  }
+
+  return {
+    ...approvedCandidates[0],
+    confidence: approvedCandidates[0].confidence ?? 0.72,
+    source: `${approvedCandidates[0].source}_default_local_hint`,
+  };
 }
 
 function selectResolvedLocation(modelMatch, candidates) {

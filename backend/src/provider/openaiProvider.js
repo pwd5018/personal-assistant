@@ -133,13 +133,19 @@ export class OpenAiProvider {
       webSearches,
       evidence,
     });
+    const normalizedEvidence = reconcileLookupEvidence({
+      evidence,
+      extraction,
+      citations,
+      webSearches,
+    });
     const composition = await composeExternalLookupResponse.call(this, {
       question,
       lookupPlan,
       rawText: extractResponseText(response),
       citations,
       webSearches,
-      evidence,
+      evidence: normalizedEvidence,
       extraction,
     });
 
@@ -149,7 +155,7 @@ export class OpenAiProvider {
       spokenText: composition.spokenAnswer,
       answerStatus: composition.answerStatus,
       showSources: composition.showSources,
-      evidence,
+      evidence: normalizedEvidence,
       extraction,
       usage: response.usage || null,
       citations,
@@ -288,6 +294,9 @@ export class OpenAiProvider {
       "Use assistant_meta or system_meta for capability, limitation, safety, policy, provider, product, or knowledge-cutoff content.",
       "Use ephemeral for one-off requests, momentary states, temporary turn instructions, and same-day plans like doing something today, later today, tonight, or this weekend.",
       "Do not recommend approve for temporary plans, one-day intentions, or current-session logistics.",
+      "Do not create memory from greetings, politeness, or casual chit-chat.",
+      "Do not treat a single question about weather, news, stocks, sports, crypto, or another live lookup topic as a durable preference or interest.",
+      "Do not paraphrase the user's request as a memory candidate, such as 'the user asked about...' or 'the user is interested in...' unless the user explicitly stated an enduring preference.",
       "Use uncertain when the fact is speculative, weakly supported, or inferred rather than explicit.",
       "Set confidence between 0.0 and 1.0 based on how clearly and directly supported the fact is by the user's words.",
       "Set recommendation to approve for durable, high-value memory; dismiss for plausible but low-value or temporary memory; reject for bad, misleading, or meta memory.",
@@ -697,6 +706,11 @@ async function extractLookupAnswerData({
             "resultTopicMatch: high, medium, or low.",
             "If the result supports an answer, provide short displayAnswer and spokenAnswer.",
             "Never include URLs, markdown links, or source attributions in the answer fields.",
+            "Keep both answer fields concise and conversational.",
+            "For weather, keep it to at most 2 short sentences.",
+            "For market_price, give the price first and at most one extra fact.",
+            "For sports, give the score or game state first if available.",
+            "For news, summarize at most 2 developments unless the user asked for more.",
             'Return this shape: {"retrievalStatus":"results_found","answerExtractability":"direct_answer","resultTopicMatch":"high","displayAnswer":"...","spokenAnswer":"..."}',
           ].join("\n"),
         },
@@ -1045,6 +1059,7 @@ function finalizeCandidateFacts(items, options = {}) {
       .filter((item) => ALLOWED_MEMORY_CATEGORIES.has(item.category))
       .filter((item) => !isFilteredCandidateFact(item.fact))
       .filter((item) => !isTemporaryPlanCandidate(item.fact, item.category, item.recommendation, transcriptText))
+      .filter((item) => !isQuestionDerivedLookupCandidate(item.fact, item.category, transcriptText))
       .filter((item) => !isMetaConversationCandidate(item.fact, item.category, transcriptText, transcriptLooksLikeMetaMemoryTalk))
       .filter((item) => {
         const fingerprint = buildFactFingerprint(item.fact);
@@ -1166,6 +1181,48 @@ function isTemporaryPlanCandidate(factText, category, recommendation, transcript
     /\b(plan|plans|going golfing|go golfing|skip|do|visit|call|text|meet)\b/.test(normalizedFact);
 
   return hasTemporarySignal || likelySingleDayPlan || /\b(today|tonight|tomorrow)\b/.test(normalizedTranscript);
+}
+
+function isQuestionDerivedLookupCandidate(factText, category, transcriptText) {
+  const normalizedFact = String(factText || "").trim().toLowerCase();
+  const normalizedTranscript = String(transcriptText || "").trim().toLowerCase();
+
+  if (!normalizedFact) {
+    return true;
+  }
+
+  const transcriptLooksLikeLookupQuestion =
+    /\?/.test(normalizedTranscript) &&
+    /\b(weather|forecast|temperature|rain|stock|price|market cap|bitcoin|crypto|news|headline|score|sports|open|hours|near me|today|right now|latest)\b/.test(normalizedTranscript);
+  const transcriptLooksLikeGreeting =
+    /^(hi|hello|hey|good morning|good afternoon|good evening|how are you|thanks|thank you)\b/.test(normalizedTranscript);
+  const factParaphrasesQuestion = [
+    /\buser asked about\b/,
+    /\buser inquires about\b/,
+    /\buser query includes\b/,
+    /\buser is interested in\b/,
+    /\bcurrent .* price\b/,
+    /\blatest news\b/,
+    /\bfriendly greeting\b/,
+    /\bcasual chit-chat\b/,
+  ].some((pattern) => pattern.test(normalizedFact));
+  const factLooksLikeLookupInterest =
+    /\b(stock|market|bitcoin|crypto|weather|news|headline|score|sports|open today|hours|price)\b/.test(normalizedFact) &&
+    (category === "user_preference" || category === "relationship_context");
+
+  if (transcriptLooksLikeGreeting) {
+    return true;
+  }
+
+  if (factParaphrasesQuestion) {
+    return true;
+  }
+
+  if (transcriptLooksLikeLookupQuestion && factLooksLikeLookupInterest) {
+    return true;
+  }
+
+  return false;
 }
 
 function isMetaConversationCandidate(factText, category, transcriptText, transcriptLooksLikeMetaMemoryTalk = false) {
@@ -1394,7 +1451,7 @@ async function composeExternalLookupResponse({
   });
 
   if (
-    needsLookupAnswerFallback(question, compactedText, lookupPlan.questionKind) ||
+    needsLookupAnswerFallback(question, compactedText, lookupPlan.questionKind, resolvedExtraction) ||
     answerStatus !== "answered"
   ) {
     return {
@@ -1474,19 +1531,30 @@ function compactExternalLookupAnswer(text) {
   return mainBody.trim();
 }
 
-function needsLookupAnswerFallback(question, text, questionKind = "other") {
+function needsLookupAnswerFallback(question, text, questionKind = "other", extraction = null) {
   const normalizedQuestion = String(question || "").trim().toLowerCase();
   const normalizedText = String(text || "").trim();
   const normalizedBody = normalizedText
     .replace(/Current sources checked:.*$/im, "")
     .trim();
+  const answerExtractability = extraction?.answerExtractability || "insufficient";
+  const resultTopicMatch = extraction?.resultTopicMatch || "medium";
+  const extractedDisplayAnswer = String(extraction?.displayAnswer || "").trim();
 
   if (!normalizedBody) {
-    return true;
+    return !extractedDisplayAnswer;
   }
 
   if (/^Current sources checked:/i.test(normalizedBody)) {
     return true;
+  }
+
+  if (
+    extractedDisplayAnswer &&
+    ["direct_answer", "summary_answer"].includes(answerExtractability) &&
+    resultTopicMatch !== "low"
+  ) {
+    return false;
   }
 
   const lineCount = normalizedBody.split("\n").filter(Boolean).length;
@@ -1510,13 +1578,13 @@ function needsLookupAnswerFallback(question, text, questionKind = "other") {
     return true;
   }
 
-  if (questionKind === "market_price" && wordCount > 45) {
+  if (questionKind === "market_price" && wordCount > 30) {
     return true;
   }
 
   if (
     questionKind === "weather" &&
-    wordCount > 55 &&
+    wordCount > 40 &&
     !/\b\d{2,3}°f\b|\b\d{1,2}°c\b|\bhigh\b|\blow\b|\bchance of\b/i.test(normalizedBody)
   ) {
     return true;
@@ -1544,6 +1612,10 @@ function buildLookupAnswerFallback({
   const resolutionStatus = lookupPlan?.resolutionStatus || "unresolved";
   const answerExtractability = extraction?.answerExtractability || "insufficient";
   const resultTopicMatch = extraction?.resultTopicMatch || "medium";
+  const extractedDisplayAnswer = normalizeAssistantAnswerText(extraction?.displayAnswer || "");
+  const extractedSpokenAnswer = normalizeAssistantAnswerText(
+    extraction?.spokenAnswer || extraction?.displayAnswer || ""
+  );
 
   if (answerStatus === "needs_clarification") {
     const displayAnswer =
@@ -1555,6 +1627,19 @@ function buildLookupAnswerFallback({
       spokenAnswer: displayAnswer,
       answerStatus,
       showSources: false,
+    };
+  }
+
+  if (
+    extractedDisplayAnswer &&
+    ["direct_answer", "summary_answer"].includes(answerExtractability) &&
+    resultTopicMatch !== "low"
+  ) {
+    return {
+      displayAnswer: extractedDisplayAnswer,
+      spokenAnswer: extractedSpokenAnswer || extractedDisplayAnswer,
+      answerStatus,
+      showSources: citations.length > 0 && evidence?.evidenceStatus !== "missing",
     };
   }
 
@@ -2000,6 +2085,50 @@ function buildFallbackAnswerExtraction({
     displayAnswer: hasDirectAnswer ? compactedText : "",
     spokenAnswer: hasDirectAnswer ? compactedText : "",
   };
+}
+
+function reconcileLookupEvidence({ evidence, extraction, citations, webSearches }) {
+  const baseEvidence = evidence || {
+    evidenceStatus: "missing",
+    supportsDirectAnswer: false,
+    confidence: 0.5,
+  };
+  const retrievalStatus = extraction?.retrievalStatus || "no_results";
+  const answerExtractability = extraction?.answerExtractability || "insufficient";
+  const hasResults =
+    retrievalStatus === "results_found" ||
+    (Array.isArray(citations) && citations.length > 0) ||
+    (Array.isArray(webSearches) && webSearches.length > 0);
+  const hasUsableAnswer = ["direct_answer", "summary_answer"].includes(answerExtractability);
+
+  if (!hasResults || !hasUsableAnswer) {
+    return baseEvidence;
+  }
+
+  if (baseEvidence.evidenceStatus === "missing") {
+    return {
+      evidenceStatus: Array.isArray(citations) && citations.length > 0 ? "weak" : "strong",
+      supportsDirectAnswer: true,
+      confidence: Math.max(0.7, Number(baseEvidence.confidence) || 0),
+    };
+  }
+
+  if (!baseEvidence.supportsDirectAnswer) {
+    return {
+      ...baseEvidence,
+      supportsDirectAnswer: true,
+      confidence: Math.max(0.7, Number(baseEvidence.confidence) || 0),
+    };
+  }
+
+  if ((Number(baseEvidence.confidence) || 0) < 0.5) {
+    return {
+      ...baseEvidence,
+      confidence: Math.max(0.7, Number(baseEvidence.confidence) || 0),
+    };
+  }
+
+  return baseEvidence;
 }
 
 function determineLookupAnswerStatus({ lookupPlan, evidence, extraction, compactedText = "" }) {

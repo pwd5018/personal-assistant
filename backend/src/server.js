@@ -140,20 +140,10 @@ app.post("/api/debug/external-lookup/preview", async (request, reply) => {
     return { error: "question is required." };
   }
 
+  const contextPackage = buildContextPackage(question);
   return {
     preview: (
-      await buildExternalLookupPlan(
-      question,
-      {
-        approvedFacts: store.getApprovedFacts(),
-        rollingSummary: store.getRollingSummary()?.summary_text || "",
-        recentTurns: store.getRecentCompletedTurns(1).map((turn) => ({
-          user: turn.transcript_text || "",
-          assistant: turn.assistant_text || "",
-        })),
-      },
-      privacyMode
-      )
+      await buildExternalLookupPlan(question, contextPackage, privacyMode)
     ).preview,
   };
 });

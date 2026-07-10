@@ -204,7 +204,36 @@ Status:
 - In progress
 - First live slice uses backend-mediated OpenAI web search with strict privacy-first query construction, source capture, and model-only fallback when lookup fails
 
-## Milestone 9: Self-Knowledge and Explainability
+## Milestone 9: External Lookup Freshness and Caching
+
+Goal:
+
+- Make current-information lookup faster and cheaper without weakening correctness, freshness, or answer-shaping quality
+
+Deliver:
+
+- A cache design that stores retrieval artifacts or typed structured lookup results instead of blindly reusing fully composed assistant answers
+- Cache keys based on normalized lookup intent, privacy mode, and resolution state rather than raw query text alone
+- Separate handling for strong answers versus fallback outcomes like `uncertain` or `needs_clarification`
+- TTL policy by lookup type with explicit freshness expectations for weather, market data, sports, news, and general current facts
+- Debug visibility into cache hit/miss behavior, cache age, and whether a reply was shaped from cached retrieval data or a fresh lookup
+- Safe invalidation and expiry behavior that cannot silently pin obviously stale current-information results
+- Live QA coverage for freshness-sensitive queries so cache behavior is validated against real turns, not only code review
+
+Exit criteria:
+
+- Repeated current-information questions are measurably faster or cheaper when appropriate
+- Cached lookup behavior does not replay the wrong answer for materially different user questions
+- Stale or weak retrieval results are not reused in ways that make the assistant less trustworthy
+- Debug/history surfaces make it clear when cached retrieval data influenced a reply
+- The assistant still composes display and spoken answers appropriately for the exact user question
+
+Status:
+
+- Not started
+- Intentionally split out from Milestone 8 so live external lookup quality can be stabilized before cache policy is trusted
+
+## Milestone 10: Self-Knowledge and Explainability
 
 Goal:
 
