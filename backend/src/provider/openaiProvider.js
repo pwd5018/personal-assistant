@@ -1470,6 +1470,7 @@ async function composeExternalLookupResponse({
     });
   const compactedText = compactExternalLookupAnswer(rawText);
   const answerStatus = determineLookupAnswerStatus({
+    question,
     lookupPlan,
     evidence: resolvedEvidence,
     extraction: resolvedExtraction,
@@ -1618,6 +1619,10 @@ function needsLookupAnswerFallback(question, text, questionKind = "other", extra
     return true;
   }
 
+  if (questionKind === "other" && looksLikeNoisyLookupSummary(normalizedBody)) {
+    return true;
+  }
+
   if (
     questionKind === "weather" &&
     wordCount > 40 &&
@@ -1652,12 +1657,11 @@ function buildLookupAnswerFallback({
   const extractedSpokenAnswer = normalizeAssistantAnswerText(
     extraction?.spokenAnswer || extraction?.displayAnswer || ""
   );
+  const sportsSubject = questionKind === "sports" ? extractSportsSubjectFromQuestion(question) : "";
+  const clarificationPrompt = buildLookupClarificationPrompt(question, lookupPlan, questionKind);
 
   if (answerStatus === "needs_clarification") {
-    const displayAnswer =
-      questionKind === "hours" || questionKind === "weather"
-        ? "I need the golf course name or your location to answer that confidently."
-        : "I need a little more detail before I can answer that confidently.";
+    const displayAnswer = clarificationPrompt || "I need a little more detail before I can answer that confidently.";
     return {
       displayAnswer,
       spokenAnswer: displayAnswer,
@@ -1669,7 +1673,9 @@ function buildLookupAnswerFallback({
   if (
     extractedDisplayAnswer &&
     ["direct_answer", "summary_answer"].includes(answerExtractability) &&
-    resultTopicMatch !== "low"
+    resultTopicMatch !== "low" &&
+    !looksLikeNoisyLookupSummary(extractedDisplayAnswer) &&
+    !(questionKind === "market_price" && looksLikeClosingPriceForLiveQuestion(question, extractedDisplayAnswer))
   ) {
     return {
       displayAnswer: extractedDisplayAnswer,
@@ -1696,7 +1702,7 @@ function buildLookupAnswerFallback({
     const placeLabel = formatLookupPlaceLabel(lookupPlan, assumedPlace, businessName);
     const displayAnswer =
       resolutionStatus === "ambiguous"
-        ? "I need the golf course name or your location to answer that confidently."
+        ? clarificationPrompt || "I need the location to answer that confidently."
         : citations.length
           ? `I couldn't confidently pin down the weather for ${placeLabel} from the sources I found.`
           : `I couldn't find a reliable weather result for ${placeLabel} yet.`;
@@ -1715,8 +1721,21 @@ function buildLookupAnswerFallback({
 
   if (questionKind === "sports" || questionKind === "news") {
     const displayAnswer =
-      answerExtractability === "off_topic" || resultTopicMatch === "low"
-        ? "I found results, but they don't clearly match what you asked, so I don't want to guess."
+      questionKind === "sports" &&
+      (extraction?.retrievalStatus === "no_results" || evidence?.evidenceStatus === "missing")
+        ? sportsSubject
+          ? `I couldn't find a reliable live ${sportsSubject} update from the sources I found.`
+          : "I couldn't find a reliable live score or game update from the sources I found."
+      : questionKind === "sports" && (answerExtractability === "off_topic" || resultTopicMatch === "low")
+        ? sportsSubject
+          ? `I found sports results, but they don't clearly match the ${sportsSubject} update you asked for.`
+          : "I found sports results, but they don't clearly match what you asked, so I don't want to guess."
+        : answerExtractability === "off_topic" || resultTopicMatch === "low"
+          ? "I found results, but they don't clearly match what you asked, so I don't want to guess."
+        : questionKind === "sports" && answerExtractability === "insufficient"
+          ? sportsSubject
+            ? `I couldn't find a reliable live ${sportsSubject} update from the sources I found.`
+            : "I couldn't find a reliable live score or game update from the sources I found."
         : answerExtractability === "insufficient"
           ? `I found results for that, but they still don't clearly answer your ${questionKind === "sports" ? "sports" : "news"} question.`
           : compactedText || "I found something, but I couldn't turn it into a clean answer yet.";
@@ -1729,7 +1748,8 @@ function buildLookupAnswerFallback({
   }
 
   if (questionKind === "market_price") {
-    const displayAnswer = compactedText || "I found current market data, but I couldn't shape it into a short answer yet.";
+    const marketPriceText = extractedDisplayAnswer || compactedText;
+    const displayAnswer = buildMarketPriceFallbackAnswer(question, marketPriceText, answerStatus);
     return {
       displayAnswer,
       spokenAnswer: displayAnswer,
@@ -1738,7 +1758,11 @@ function buildLookupAnswerFallback({
     };
   }
 
-  const displayAnswer = compactedText || "I found something, but I couldn't shape it into a confident answer yet.";
+  const sanitizedCompactedText = looksLikeNoisyLookupSummary(compactedText) ? "" : compactedText;
+  const displayAnswer =
+    answerStatus === "uncertain"
+      ? sanitizedCompactedText || "I couldn't find a reliable current answer from the sources I found."
+      : sanitizedCompactedText || "I found something, but I couldn't shape it into a confident answer yet.";
   return {
     displayAnswer,
     spokenAnswer: displayAnswer,
@@ -2037,11 +2061,11 @@ function inferQuestionKindFromQuestion(question) {
     return "weather";
   }
 
-  if (/\bstock|price|market cap|earnings|after-hours\b/.test(normalizedQuestion)) {
+  if (/\bstock|price|market cap|earnings|after-hours|exchange rate\b/.test(normalizedQuestion)) {
     return "market_price";
   }
 
-  if (/\bopen|closed|hours\b/.test(normalizedQuestion)) {
+  if (/\bopen|hours|closing time\b/.test(normalizedQuestion) || looksLikeHoursQuestion(normalizedQuestion)) {
     return "hours";
   }
 
@@ -2168,6 +2192,7 @@ function reconcileLookupEvidence({ evidence, extraction, citations, webSearches 
 }
 
 function determineLookupAnswerStatus({ lookupPlan, evidence, extraction, compactedText = "" }) {
+  const question = arguments[0]?.question || "";
   const resolutionStatus = lookupPlan?.resolutionStatus || "unresolved";
   const questionKind = lookupPlan?.questionKind || "other";
   const evidenceStatus = evidence?.evidenceStatus || "missing";
@@ -2176,6 +2201,9 @@ function determineLookupAnswerStatus({ lookupPlan, evidence, extraction, compact
   const resultTopicMatch = extraction?.resultTopicMatch || "medium";
   const hasDirectAnswer = textLooksLikeDirectLookupAnswer(compactedText, questionKind);
   const asksForClarification = textLooksLikeClarificationRequest(compactedText);
+  const specificSportsQuestion = questionKind === "sports" && isSpecificSportsQuestion(question);
+  const genericLookupQuestion = questionKind === "other";
+  const specificMarketQuestion = questionKind === "market_price" && isSpecificMarketQuestion(question);
 
   if (resolutionStatus === "ambiguous") {
     return "needs_clarification";
@@ -2186,11 +2214,19 @@ function determineLookupAnswerStatus({ lookupPlan, evidence, extraction, compact
   }
 
   if (answerExtractability === "off_topic" || resultTopicMatch === "low") {
-    return resolutionStatus === "resolved" ? "uncertain" : "needs_clarification";
+    return specificSportsQuestion || genericLookupQuestion || specificMarketQuestion
+      ? "uncertain"
+      : resolutionStatus === "resolved"
+        ? "uncertain"
+        : "needs_clarification";
   }
 
   if (answerExtractability === "insufficient") {
-    return resolutionStatus === "resolved" ? "uncertain" : "needs_clarification";
+    return specificSportsQuestion || genericLookupQuestion || specificMarketQuestion
+      ? "uncertain"
+      : resolutionStatus === "resolved"
+        ? "uncertain"
+        : "needs_clarification";
   }
 
   if (answerExtractability === "summary_answer" && questionKind === "news") {
@@ -2203,6 +2239,9 @@ function determineLookupAnswerStatus({ lookupPlan, evidence, extraction, compact
     }
 
     if (questionKind === "market_price") {
+      if (looksLikeClosingPriceForLiveQuestion(question, extraction?.displayAnswer || compactedText)) {
+        return "partial";
+      }
       return "answered";
     }
 
@@ -2210,15 +2249,27 @@ function determineLookupAnswerStatus({ lookupPlan, evidence, extraction, compact
   }
 
   if (evidenceStatus === "missing") {
-    return resolutionStatus === "resolved" ? "uncertain" : "needs_clarification";
+    return specificSportsQuestion || genericLookupQuestion || specificMarketQuestion
+      ? "uncertain"
+      : resolutionStatus === "resolved"
+        ? "uncertain"
+        : "needs_clarification";
   }
 
   if (evidenceStatus === "mismatched") {
-    return resolutionStatus === "resolved" ? "uncertain" : "needs_clarification";
+    return specificSportsQuestion || genericLookupQuestion || specificMarketQuestion
+      ? "uncertain"
+      : resolutionStatus === "resolved"
+        ? "uncertain"
+        : "needs_clarification";
   }
 
   if (!supportsDirectAnswer) {
-    return resolutionStatus === "resolved" ? "uncertain" : "needs_clarification";
+    return specificSportsQuestion || genericLookupQuestion || specificMarketQuestion
+      ? "uncertain"
+      : resolutionStatus === "resolved"
+        ? "uncertain"
+        : "needs_clarification";
   }
 
   if (evidenceStatus === "weak") {
@@ -2299,7 +2350,12 @@ function textLooksLikeDirectLookupAnswer(text, questionKind = "other") {
   }
 
   if (questionKind === "market_price") {
-    return /\$\s?\d[\d,.]*/.test(normalized) || /\btrading at\b|\bpriced at\b|\bup\b|\bdown\b/i.test(normalized);
+    return (
+      /\$\s?\d[\d,.]*/.test(normalized) ||
+      /\btrading at\b|\bpriced at\b|\bup\b|\bdown\b/i.test(normalized) ||
+      /\b\d+(?:\.\d+)?\s*(?:usd|eur|gbp|cad|aud|jpy|cny|inr)\b/i.test(normalized) ||
+      /\b(?:usd|eur|gbp|cad|aud|jpy|cny|inr)\s*\/\s*(?:usd|eur|gbp|cad|aud|jpy|cny|inr)\b/i.test(normalized)
+    );
   }
 
   if (questionKind === "sports") {
@@ -2318,7 +2374,205 @@ function textLooksLikeDirectLookupAnswer(text, questionKind = "other") {
     return /\b(open|closed|can't confirm|cannot confirm|hours)\b/i.test(lower);
   }
 
-  return normalized.split(/\s+/).length >= 8;
+  return normalized.split(/\s+/).length >= 8 && !looksLikeNoisyLookupSummary(normalized);
+}
+
+function buildMarketPriceFallbackAnswer(question, marketPriceText, answerStatus = "partial") {
+  const normalizedAnswer = normalizeAssistantAnswerText(marketPriceText || "");
+  const exchangePair = extractExchangeRatePair(question);
+  if (!normalizedAnswer) {
+    if (exchangePair && answerStatus === "uncertain") {
+      return `I couldn't confirm a reliable current exchange rate for ${exchangePair} from the sources I found.`;
+    }
+    return "I found market data, but I couldn't turn it into a reliable short answer yet.";
+  }
+
+  if (looksLikeClosingPriceForLiveQuestion(question, normalizedAnswer)) {
+    const priceMatch = normalizedAnswer.match(/\$\s?\d[\d,.]*/);
+    const dateMatch = normalizedAnswer.match(/\b(?:on|as of)\s+([A-Z][a-z]+\s+\d{1,2},\s+\d{4})\b/);
+    const priceLabel = priceMatch ? priceMatch[0].replace(/\s+/g, "") : "that price";
+    const dateLabel = dateMatch?.[1] || "the latest close I found";
+    return `The latest price I found was a closing price of ${priceLabel} on ${dateLabel}, not a confirmed live quote.`;
+  }
+
+  return normalizedAnswer;
+}
+
+function buildLookupClarificationPrompt(question, lookupPlan, questionKind = "other") {
+  const normalizedQuestion = String(question || "").toLowerCase();
+  const hasResolvedLocation = Boolean(String(lookupPlan?.queryEnrichment?.location || "").trim());
+
+  if (!hasResolvedLocation && /\b(golf course|golf club|that course|that club)\b/.test(normalizedQuestion)) {
+    return "I need the course name or your location to answer that confidently.";
+  }
+
+  if (!hasResolvedLocation && looksLikeLocationSensitiveLookupQuestion(question, questionKind)) {
+    if (questionKind === "hours") {
+      return "I need the city, state, or specific place name to answer that confidently.";
+    }
+
+    if (questionKind === "weather") {
+      return "I need the location to answer that confidently.";
+    }
+
+    return "I need the location or the specific place to answer that confidently.";
+  }
+
+  return "";
+}
+
+function looksLikeLocationSensitiveLookupQuestion(question, questionKind = "other") {
+  const normalizedQuestion = String(question || "").toLowerCase();
+  if (!normalizedQuestion) {
+    return false;
+  }
+
+  if (/\b(near me|nearby|around here|close by|local)\b/.test(normalizedQuestion)) {
+    return true;
+  }
+
+  if (questionKind === "weather" || questionKind === "hours") {
+    return /\b(dmv|department of motor vehicles|post office|social security office|license office|city hall|courthouse|clinic|store|restaurant|pharmacy|bank|office)\b/.test(
+      normalizedQuestion
+    );
+  }
+
+  return /\b(route|i-\d+|interstate|highway|freeway|road|bridge|tunnel|airport|station)\b/.test(
+    normalizedQuestion
+  ) && !/\b(in|near)\s+[a-z]/.test(normalizedQuestion);
+}
+
+function looksLikeHoursQuestion(question) {
+  const normalizedQuestion = String(question || "").toLowerCase();
+  if (!normalizedQuestion) {
+    return false;
+  }
+
+  if (looksLikeNonHoursClosureQuestion(normalizedQuestion)) {
+    return false;
+  }
+
+  return /\b(open|hours|closing time|closed today|closed now|what time .* close|what time .* open|when does .* close|when does .* open)\b/.test(
+    normalizedQuestion
+  );
+}
+
+function looksLikeNonHoursClosureQuestion(question) {
+  const normalizedQuestion = String(question || "").toLowerCase();
+  if (!normalizedQuestion.includes("closed")) {
+    return false;
+  }
+
+  return /\b(route|i-\d+|interstate|highway|freeway|road|street|bridge|tunnel|lane|airport|runway|border|service|website|site|app|system|server|power|internet|train|subway|station|flight)\b/.test(
+    normalizedQuestion
+  );
+}
+
+function looksLikeNoisyLookupSummary(text) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return false;
+  }
+
+  const lower = normalized.toLowerCase();
+  const stateMentions = lower.match(
+    /\b(alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|wisconsin|wyoming)\b/g
+  );
+  const uniqueStates = new Set(stateMentions || []);
+
+  if (uniqueStates.size >= 2) {
+    return true;
+  }
+
+  return (
+    /current sources checked:/i.test(normalized) ||
+    /\baccording to\b.+\baccording to\b/i.test(normalized) ||
+    /\b(hours|phone|address):\b/i.test(lower) ||
+    normalized.length > 220
+  );
+}
+
+function looksLikeClosingPriceForLiveQuestion(question, answerText) {
+  const normalizedQuestion = String(question || "").toLowerCase();
+  const normalizedAnswer = String(answerText || "").toLowerCase();
+  if (!normalizedQuestion || !normalizedAnswer) {
+    return false;
+  }
+
+  const asksForLivePrice = /\b(right now|currently|live|today|at the moment)\b/.test(normalizedQuestion);
+  if (!asksForLivePrice) {
+    return false;
+  }
+
+  const explicitlyLive = /\b(trading|currently|right now|live|after-hours|pre-market|intraday)\b/.test(normalizedAnswer);
+  if (explicitlyLive) {
+    return false;
+  }
+
+  return /\b(closed at|closing price|closed|at the close|as of [a-z]+ \d{1,2}, \d{4}|on [a-z]+ \d{1,2}, \d{4})\b/.test(normalizedAnswer);
+}
+
+function isSpecificSportsQuestion(question) {
+  const subject = extractSportsSubjectFromQuestion(question);
+  return Boolean(subject && subject.split(/\s+/).length <= 5);
+}
+
+function isSpecificMarketQuestion(question) {
+  return Boolean(extractExchangeRatePair(question) || extractMarketSubjectFromQuestion(question));
+}
+
+function extractMarketSubjectFromQuestion(question) {
+  const normalized = String(question || "")
+    .trim()
+    .replace(/\?/g, "");
+  if (!normalized) {
+    return "";
+  }
+
+  return normalized
+    .replace(/\b(what(?:'s| is)?|tell me|show me|give me|latest|current|currently|right now|today|price|stock|share price|quote|market cap|earnings|exchange rate|rate|from|to)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractExchangeRatePair(question) {
+  const normalizedQuestion = String(question || "").toUpperCase();
+  if (!normalizedQuestion) {
+    return "";
+  }
+
+  const fromToMatch = normalizedQuestion.match(/\bFROM\s+([A-Z]{3})\s+TO\s+([A-Z]{3})\b/);
+  if (fromToMatch) {
+    return `${fromToMatch[1]} to ${fromToMatch[2]}`;
+  }
+
+  const pairMatch = normalizedQuestion.match(/\b([A-Z]{3})\s*\/\s*([A-Z]{3})\b/);
+  if (pairMatch) {
+    return `${pairMatch[1]} to ${pairMatch[2]}`;
+  }
+
+  return "";
+}
+
+function extractSportsSubjectFromQuestion(question) {
+  const normalized = String(question || "")
+    .trim()
+    .replace(/\?/g, "");
+  if (!normalized) {
+    return "";
+  }
+
+  const match =
+    normalized.match(/(?:what(?:'s| is)\s+)?(?:the\s+)?(.+?)\s+(?:score|scores|record|schedule|standings)\b/i) ||
+    normalized.match(/(?:for\s+)?(.+?)\s+(?:score|scores|record|schedule|standings)\b/i);
+  if (!match) {
+    return "";
+  }
+
+  return String(match[1] || "")
+    .replace(/\b(right now|today|tonight|live|currently)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizeEvidenceStatus(value, fallback = "weak") {

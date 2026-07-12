@@ -238,7 +238,9 @@ async function buildLookupQueryDetails({
     return {
       query: baseQuery,
       queryEnrichment: null,
-      resolutionStatus: "unresolved",
+      resolutionStatus: shouldTreatQuestionAsAmbiguousLocalReference(originalQuestion, lookupDecision)
+        ? "ambiguous"
+        : "unresolved",
       resolutionConfidence: null,
     };
   }
@@ -314,7 +316,16 @@ async function resolveLocationHint({
   const uniqueCandidates = dedupeLocationCandidates(candidates);
 
   const heuristicMatch = findBestLocationCandidate(normalizedQuestion, uniqueCandidates);
-  const defaultMatch = findDefaultLocationCandidate(uniqueCandidates, lookupDecision, heuristicMatch);
+  if (shouldTreatQuestionAsAmbiguousLocalReference(normalizedQuestion, lookupDecision, heuristicMatch)) {
+    return null;
+  }
+
+  const defaultMatch = findDefaultLocationCandidate(
+    uniqueCandidates,
+    lookupDecision,
+    heuristicMatch,
+    normalizedQuestion
+  );
   if (!provider.isConfigured() || !lookupDecision?.canUseLocalMemoryForResolution) {
     return heuristicMatch || defaultMatch;
   }
@@ -424,7 +435,7 @@ function findBestLocationCandidate(question, candidates) {
   return null;
 }
 
-function findDefaultLocationCandidate(candidates, lookupDecision, explicitMatch) {
+function findDefaultLocationCandidate(candidates, lookupDecision, explicitMatch, question = "") {
   if (explicitMatch) {
     return null;
   }
@@ -434,6 +445,10 @@ function findDefaultLocationCandidate(candidates, lookupDecision, explicitMatch)
   }
 
   if (!["weather", "hours"].includes(lookupDecision?.questionKind || "")) {
+    return null;
+  }
+
+  if (shouldTreatQuestionAsAmbiguousLocalReference(question, lookupDecision, explicitMatch)) {
     return null;
   }
 
@@ -559,4 +574,25 @@ function normalizeEntity(value) {
   )
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function shouldTreatQuestionAsAmbiguousLocalReference(question, lookupDecision, explicitMatch = null) {
+  if (explicitMatch) {
+    return false;
+  }
+
+  if (!["weather", "hours"].includes(lookupDecision?.questionKind || "")) {
+    return false;
+  }
+
+  const normalizedQuestion = String(question || "").trim().toLowerCase();
+  if (!normalizedQuestion) {
+    return false;
+  }
+
+  if (/\b(near me|nearby|around here|close by|local)\b/.test(normalizedQuestion)) {
+    return true;
+  }
+
+  return /\b(golf course|golf club|that course|that club|that place)\b/.test(normalizedQuestion);
 }

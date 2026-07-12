@@ -21,7 +21,8 @@ const FALLBACK_LOOKUP_SIGNALS = [
   },
   {
     label: "hours_or_availability",
-    pattern: /\b(open now|hours|closing time|release date|shipping date)\b/i,
+    pattern:
+      /\b(open now|open today|closed|closed today|closed now|hours|closing time|what time .* close|what time .* open|when does .* close|when does .* open|release date|shipping date)\b/i,
   },
 ];
 
@@ -258,7 +259,7 @@ function inferFallbackQuestionKind(question, matchedSignals) {
     return "market_price";
   }
 
-  if (matchedSignals.includes("hours_or_availability")) {
+  if (matchedSignals.includes("hours_or_availability") && !looksLikeNonHoursClosureQuestion(normalizedQuestion)) {
     return "hours";
   }
 
@@ -271,4 +272,15 @@ function inferFallbackQuestionKind(question, matchedSignals) {
   }
 
   return matchedSignals.length ? "other" : "general_chat";
+}
+
+function looksLikeNonHoursClosureQuestion(question) {
+  const normalizedQuestion = String(question || "").toLowerCase();
+  if (!normalizedQuestion.includes("closed")) {
+    return false;
+  }
+
+  return /\b(route|i-\d+|interstate|highway|freeway|road|street|bridge|tunnel|lane|airport|runway|border|service|website|site|app|system|server|power|internet|train|subway|station|flight)\b/.test(
+    normalizedQuestion
+  );
 }

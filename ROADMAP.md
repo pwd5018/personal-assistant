@@ -230,8 +230,8 @@ Exit criteria:
 
 Status:
 
-- Not started
-- Intentionally split out from Milestone 8 so live external lookup quality can be stabilized before cache policy is trusted
+- Done
+- Validated through cache-key normalization, typed retrieval-artifact reuse, TTL policy by lookup type, cache-aware debug metadata, live backend API turns, and regression coverage for freshness-sensitive lookup behavior
 
 ## Milestone 10: Self-Knowledge and Explainability
 
@@ -257,6 +257,38 @@ Exit criteria:
 Status:
 
 - Not started
+
+## Milestone 11: Configurable AI Providers and Model Routing
+
+Goal:
+
+- Make model-provider selection a first-class product setting so chat and voice can be routed independently from the browser UI
+
+Deliver:
+
+- A browser-visible settings surface for configuring AI provider and model choices without editing env files for normal experimentation
+- Separate routing controls for the main chat/reply path and the voice path so combinations like OpenAI for chat plus Gemini for voice are supported
+- Configurable model selection for the lighter-weight summary path as a secondary setting, even if provider-splitting there is lower priority than chat and voice
+- A backend provider abstraction that can cleanly support multiple AI vendors for chat, speech-to-text, text-to-speech, lookup decisioning, and related model calls
+- Initial additional provider support for Gemini and Groq alongside the existing OpenAI path
+- Clear validation and fallback behavior when a selected provider does not support a required capability for that path
+- Debug visibility showing which provider and model handled each part of a turn
+- Safe persistence for provider/model preferences so the current selection survives reloads
+- Guardrails in the UI so unsupported or incomplete provider/model combinations are understandable instead of silently failing
+
+Exit criteria:
+
+- The user can choose provider and model configuration from the browser UI
+- Chat and voice can be split across different providers without breaking the existing turn flow
+- The summary model can also be adjusted from the UI without code or env edits
+- OpenAI, Gemini, and Groq are all usable through the shared provider-routing architecture for the capabilities they support
+- Unsupported combinations fail clearly and recoverably
+- Stored turn/debug metadata makes the chosen provider/model path obvious
+
+Status:
+
+- Planned
+- Intentionally queued as the next capability phase after the current lookup/caching work is finished
 
 ## Working Assumptions
 

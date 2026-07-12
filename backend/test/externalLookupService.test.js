@@ -24,11 +24,26 @@ function buildContext() {
   };
 }
 
-test("balanced lookup uses remembered place hints for location-dependent questions", async () => {
+test("balanced lookup keeps generic near-me golf-course questions ambiguous", async () => {
   provider.isConfigured = () => false;
 
   const plan = await buildExternalLookupPlan(
     "What's the weather at the golf course near me today?",
+    buildContext(),
+    "balanced"
+  );
+
+  assert.equal(plan.privacyMode, "balanced");
+  assert.equal(plan.resolutionStatus, "ambiguous");
+  assert.equal(plan.queryEnrichment, null);
+  assert.equal(plan.query, "What's the weather at the golf course near me today?");
+});
+
+test("balanced lookup still resolves an explicitly named remembered place", async () => {
+  provider.isConfigured = () => false;
+
+  const plan = await buildExternalLookupPlan(
+    "What's the weather at The Ridge today?",
     buildContext(),
     "balanced"
   );
@@ -50,7 +65,7 @@ test("strict lookup does not use remembered place hints", async () => {
   );
 
   assert.equal(plan.privacyMode, "strict");
-  assert.equal(plan.resolutionStatus, "unresolved");
+  assert.equal(plan.resolutionStatus, "ambiguous");
   assert.equal(plan.queryEnrichment, null);
   assert.equal(plan.query, "What's the weather at the golf course near me today?");
 });

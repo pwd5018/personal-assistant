@@ -14,7 +14,7 @@ const WEAK_RESULT_TTL_MS = 2 * 60 * 1000;
 const UNCERTAIN_RESULT_TTL_MS = 60 * 1000;
 
 export function buildLookupCacheDescriptor(lookupPlan) {
-  const normalizedQuery = normalizeKeyPart(lookupPlan?.query || "");
+  const normalizedQuery = normalizeLookupQueryForCache(lookupPlan?.query || "", lookupPlan?.questionKind || "other");
   if (!normalizedQuery) {
     return {
       cacheable: false,
@@ -212,6 +212,47 @@ function normalizeKeyPart(value) {
     .trim()
     .toLowerCase()
     .replace(/\s+/g, " ");
+}
+
+function normalizeLookupQueryForCache(query, questionKind) {
+  const normalizedQuestionKind = normalizeLookupQuestionKind(questionKind);
+  const normalizedQuery = normalizeKeyPart(query)
+    .replace(/[?.,!]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (normalizedQuestionKind === "market_price") {
+    const subject = normalizedQuery
+      .replace(/\//g, " ")
+      .replace(/\b([a-z0-9]+)'s\b/g, "$1")
+      .replace(/'/g, "")
+      .replace(/\b(?:what|whats|what s|what is)\s+(?:the\s+)?/g, " ")
+      .replace(/\b(what|whats|what s|what is|is|the|tell me|show me|give me|current|currently|right now|today|stock price|stock|share price|share|shares|price|quote|trading at|at|exchange rate|rate|from|to)\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return subject ? `market_price ${subject}` : "market_price";
+  }
+
+  if (normalizedQuestionKind === "sports") {
+    const subject = normalizedQuery
+      .replace(/\b(whats|what is|tell me|show me|give me|latest|current|currently|right now|today|tonight|live|score|scores|record|schedule|standings)\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return subject ? `sports ${subject}` : "sports";
+  }
+
+  if (normalizedQuestionKind === "other") {
+    const subject = normalizedQuery
+      .replace(/\b([a-z0-9]+)'s\b/g, "$1")
+      .replace(/'/g, "")
+      .replace(/\b(who|what|when|where|why|how)\s+(is|are|was|were|does|do|did|can|could|would|will)\b/g, " ")
+      .replace(/\b(tell me|show me|give me|latest|current|currently|right now|today|tonight|this week|this month|for me|please)\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return subject ? `other ${subject}` : "other";
+  }
+
+  return normalizedQuery;
 }
 
 function normalizeLookupQuestionKind(value) {
