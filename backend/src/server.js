@@ -18,6 +18,10 @@ import {
 } from "./lookupCache.js";
 import { memoryScheduler } from "./memoryScheduler.js";
 import { provider } from "./provider/index.js";
+import {
+  buildSelfKnowledgeDebugState,
+  buildSelfKnowledgeResponse,
+} from "./selfKnowledgeService.js";
 import { store } from "./store.js";
 import { summaryScheduler } from "./summaryScheduler.js";
 
@@ -132,6 +136,10 @@ app.get("/api/debug/turns", async () => ({
   turns: store.getDebugTurns(),
   rollingSummary: store.getRollingSummary(),
   approvedFacts: store.getApprovedFacts(),
+}));
+
+app.get("/api/debug/self-knowledge", async () => ({
+  selfKnowledge: buildSelfKnowledgeDebugState(),
 }));
 
 app.get("/api/memory", async () => ({
@@ -344,14 +352,20 @@ async function runAssistantTurn({
   reply,
 }) {
   try {
-    const contextPackage = buildContextPackage(transcriptText);
-    const lookupPlan = await buildExternalLookupPlan(transcriptText, contextPackage, lookupPrivacyMode);
+    const selfKnowledgeResponse = buildSelfKnowledgeResponse(transcriptText);
+    const contextPackage = buildContextPackage(transcriptText, {
+      selfKnowledge: selfKnowledgeResponse?.context || null,
+      recentExplainability: selfKnowledgeResponse?.explainability || null,
+    });
+    const lookupPlan = selfKnowledgeResponse
+      ? null
+      : await buildExternalLookupPlan(transcriptText, contextPackage, lookupPrivacyMode);
 
     sendEvent({
       type: "context",
       preview: {
         ...contextPackage,
-        externalLookup: lookupPlan.preview,
+        ...(lookupPlan ? { externalLookup: lookupPlan.preview } : {}),
       },
       turnId,
     });
@@ -361,7 +375,34 @@ async function runAssistantTurn({
     let providerMetadata = buildProviderMetadata();
     let providerUsage = null;
 
-    if (lookupPlan.shouldLookup) {
+    if (selfKnowledgeResponse) {
+      assistantText = selfKnowledgeResponse.text;
+      spokenAnswerText = selfKnowledgeResponse.text;
+      timings.chatFirstToken = new Date().toISOString();
+      sendEvent({ type: "text-delta", delta: assistantText, turnId });
+
+      providerMetadata = buildProviderMetadata({
+        provider: "local_self_knowledge",
+        api: "local_self_knowledge",
+        selfKnowledge: {
+          status: "used",
+          topic: selfKnowledgeResponse.topic,
+          evidence: selfKnowledgeResponse.evidence,
+          inference: selfKnowledgeResponse.inference,
+          unknowns: selfKnowledgeResponse.unknowns,
+          nextChecks: selfKnowledgeResponse.explainability?.nextChecks || [],
+          answerMode: selfKnowledgeResponse.explainability?.answerMode || selfKnowledgeResponse.topic,
+          latestTurnId: selfKnowledgeResponse.latestTurnId,
+        },
+        lookup: {
+          status: "not_applicable",
+          reason: "self_knowledge_answer",
+          key: "",
+          keyParts: null,
+          ttlMs: 0,
+        },
+      });
+    } else if (lookupPlan.shouldLookup) {
       sendEvent({ type: "status", phase: "researching", turnId });
 
       try {

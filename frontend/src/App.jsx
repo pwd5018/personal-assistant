@@ -207,6 +207,11 @@ export default function App() {
   const [rollingSummary, setRollingSummary] = useState({ summary_text: "", updated_at: "" });
   const [candidateFacts, setCandidateFacts] = useState([]);
   const [approvedFacts, setApprovedFacts] = useState([]);
+  const [selfKnowledgeState, setSelfKnowledgeState] = useState({
+    overview: null,
+    latestTurnExplanation: null,
+    latestFailureExplanation: null,
+  });
   const [appStatus, setAppStatus] = useState({
     backendReachable: false,
     providerConfigured: false,
@@ -260,10 +265,11 @@ export default function App() {
 
   async function loadDebugState() {
     try {
-      const [healthResponse, debugResponse, memoryResponse] = await Promise.all([
+      const [healthResponse, debugResponse, memoryResponse, selfKnowledgeResponse] = await Promise.all([
         fetch(`${API_BASE}/api/health`),
         fetch(`${API_BASE}/api/debug/turns`),
         fetch(`${API_BASE}/api/memory`),
+        fetch(`${API_BASE}/api/debug/self-knowledge`),
       ]);
       if (!healthResponse.ok) {
         throw new Error(`Health fetch failed with ${healthResponse.status}.`);
@@ -274,10 +280,14 @@ export default function App() {
       if (!memoryResponse.ok) {
         throw new Error(`Memory fetch failed with ${memoryResponse.status}.`);
       }
+      if (!selfKnowledgeResponse.ok) {
+        throw new Error(`Self-knowledge fetch failed with ${selfKnowledgeResponse.status}.`);
+      }
 
       const healthData = await healthResponse.json();
       const debugData = await debugResponse.json();
       const memoryData = await memoryResponse.json();
+      const selfKnowledgeData = await selfKnowledgeResponse.json();
       setAppStatus({
         backendReachable: Boolean(healthData.ok),
         providerConfigured: Boolean(healthData.providerConfigured),
@@ -287,6 +297,9 @@ export default function App() {
       setRollingSummary(debugData.rollingSummary || { summary_text: "", updated_at: "" });
       setCandidateFacts(memoryData.candidateFacts || []);
       setApprovedFacts(memoryData.approvedFacts || []);
+      setSelfKnowledgeState(
+        selfKnowledgeData.selfKnowledge || { overview: null, latestTurnExplanation: null, latestFailureExplanation: null }
+      );
     } catch (error) {
       setAppStatus({
         backendReachable: false,
@@ -1298,6 +1311,97 @@ export default function App() {
 
             <div className="debug-section">
               <div className="section-heading">
+                <h3>Self-knowledge</h3>
+                <p>Keep the new explainability source visible without digging through raw turn JSON.</p>
+              </div>
+              <div className="debug-grid two-column">
+                <div className="debug-card">
+                  <label>How Mira can explain itself</label>
+                  <p>{selfKnowledgeState.overview?.architectureSummary || "No self-knowledge overview yet."}</p>
+                  <p>{selfKnowledgeState.overview?.providerSummary || "The backend overview will appear here."}</p>
+                  {selfKnowledgeState.overview?.sampleQuestions?.length ? (
+                    <div className="memory-list">
+                      {selfKnowledgeState.overview.sampleQuestions.map((question) => (
+                        <div className="memory-item" key={question}>
+                          <div>
+                            <p>{question}</p>
+                            <small>Supported in this first Phase 10 pass</small>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="debug-card">
+                  <label>Latest reply explanation</label>
+                  {selfKnowledgeState.latestTurnExplanation ? (
+                    <>
+                      <p>{selfKnowledgeState.latestTurnExplanation.summary}</p>
+                      <small className="card-note">
+                        Turn {formatTurnSource(selfKnowledgeState.latestTurnExplanation.latestTurnId)}
+                        {selfKnowledgeState.latestTurnExplanation.answerMode
+                          ? ` â€¢ ${formatCategoryLabel(selfKnowledgeState.latestTurnExplanation.answerMode)}`
+                          : ""}
+                      </small>
+                      {renderExplainabilitySections(selfKnowledgeState.latestTurnExplanation)}
+                    </>
+                  ) : (
+                    <p>No completed turn is available for explainability yet.</p>
+                  )}
+                </div>
+              </div>
+              <div className="debug-grid two-column">
+                <div className="debug-card">
+                  <label>Latest failure guidance</label>
+                  {selfKnowledgeState.latestFailureExplanation ? (
+                    <>
+                      <p>{selfKnowledgeState.latestFailureExplanation.summary}</p>
+                      <small className="card-note">
+                        Turn {formatTurnSource(selfKnowledgeState.latestFailureExplanation.latestTurnId)}
+                        {selfKnowledgeState.latestFailureExplanation.failureCategory
+                          ? ` â€¢ ${formatCategoryLabel(selfKnowledgeState.latestFailureExplanation.failureCategory)}`
+                          : ""}
+                      </small>
+                      {renderExplainabilitySections(selfKnowledgeState.latestFailureExplanation)}
+                    </>
+                  ) : (
+                    <p>No recent failed or degraded turn is available for debug guidance yet.</p>
+                  )}
+                </div>
+                <div className="debug-card">
+                  <label>Lookup and runtime facts</label>
+                  {selfKnowledgeState.overview?.lookupFacts?.length ? (
+                    <div className="memory-list">
+                      {selfKnowledgeState.overview.lookupFacts.map((fact) => (
+                        <div className="memory-item" key={fact}>
+                          <div>
+                            <p>{fact}</p>
+                            <small>Grounded in current backend behavior</small>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p>No lookup facts available yet.</p>
+                  )}
+                  {selfKnowledgeState.overview?.runtimeFacts?.length ? (
+                    <div className="memory-list">
+                      {selfKnowledgeState.overview.runtimeFacts.map((fact) => (
+                        <div className="memory-item" key={fact}>
+                          <div>
+                            <p>{fact}</p>
+                            <small>Current configured runtime defaults</small>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div className="debug-section">
+              <div className="section-heading">
                 <h3>Memory</h3>
                 <p>Review durable context before it reaches live prompts.</p>
               </div>
@@ -1591,6 +1695,9 @@ export default function App() {
                     <p><strong>User:</strong> {turn.transcript_text || "(empty)"}</p>
                     <p><strong>Assistant:</strong> {turn.assistant_text || "(none)"}</p>
                     <p><strong>Lookup:</strong> {describeStoredTurnLookup(turn)}</p>
+                    {describeStoredTurnSelfKnowledge(turn) ? (
+                      <p><strong>Self-knowledge:</strong> {describeStoredTurnSelfKnowledge(turn)}</p>
+                    ) : null}
                     {renderLookupSources(parseStoredJson(turn.provider_json)?.lookup?.citations, "Sources")}
                   </div>
                   <details>
@@ -1730,6 +1837,11 @@ function summarizeTurn(turn) {
   const tokenInfo = parseStoredJson(turn.token_json);
   const tokenCount = tokenInfo?.provider?.total_tokens;
   const failure = parseStoredJson(turn.failure_json);
+  const selfKnowledge = parseStoredJson(turn.provider_json)?.selfKnowledge;
+
+  if (selfKnowledge?.status === "used") {
+    return `Answered from local self-knowledge about ${formatCategoryLabel(selfKnowledge.topic || "self_knowledge").toLowerCase()}`;
+  }
 
   if (failure?.stage) {
     return `Ended with ${failure.stage} issue${tokenCount ? ` • ${tokenCount} tokens` : ""}`;
@@ -1803,6 +1915,51 @@ function formatResolutionNote(value) {
   return String(value)
     .replace(/_/g, " ")
     .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function renderExplainabilitySections(explanation) {
+  if (!explanation) {
+    return <p>No explainability details yet.</p>;
+  }
+
+  return (
+    <div className="memory-list">
+      <div className="memory-item">
+        <div>
+          <p><strong>Confirmed evidence</strong></p>
+          <small>{joinExplainabilityItems(explanation.evidence)}</small>
+        </div>
+      </div>
+      <div className="memory-item">
+        <div>
+          <p><strong>Inference</strong></p>
+          <small>{joinExplainabilityItems(explanation.inference)}</small>
+        </div>
+      </div>
+      <div className="memory-item">
+        <div>
+          <p><strong>Unknown</strong></p>
+          <small>{joinExplainabilityItems(explanation.unknowns)}</small>
+        </div>
+      </div>
+      {Array.isArray(explanation.nextChecks) && explanation.nextChecks.length ? (
+        <div className="memory-item">
+          <div>
+            <p><strong>Useful next checks</strong></p>
+            <small>{joinExplainabilityItems(explanation.nextChecks)}</small>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function joinExplainabilityItems(items) {
+  if (!Array.isArray(items) || !items.length) {
+    return "None recorded.";
+  }
+
+  return items.join(" ");
 }
 
 function buildSetupMessage(appStatus, recorderReady) {
@@ -1898,6 +2055,9 @@ const AVATAR_STATES = {
 function describeLiveLookup(voiceState) {
   const lookupStatus = voiceState.provider?.lookup?.status;
   const cacheStatus = voiceState.provider?.lookup?.cache?.status;
+  if (voiceState.provider?.selfKnowledge?.status === "used") {
+    return `Local self-knowledge (${formatCategoryLabel(voiceState.provider.selfKnowledge.topic || "self_knowledge").toLowerCase()})`;
+  }
   if (lookupStatus === "used") {
     const citationCount = voiceState.provider?.lookup?.citations?.length || 0;
     const sourceLabel = citationCount ? `Current sources used (${citationCount})` : "Current sources used";
@@ -1955,10 +2115,37 @@ function describeStoredTurnLookup(turn) {
     return "Lookup is disabled";
   }
 
+  if (lookup.status === "not_applicable") {
+    return "Lookup not applicable for this local self-knowledge answer";
+  }
+
   return "Model-only";
 }
 
+function describeStoredTurnSelfKnowledge(turn) {
+  const providerInfo = parseStoredJson(turn.provider_json);
+  const selfKnowledge = providerInfo?.selfKnowledge;
+
+  if (!selfKnowledge || selfKnowledge.status !== "used") {
+    return "";
+  }
+
+  const topic = formatCategoryLabel(selfKnowledge.topic || "self_knowledge").toLowerCase();
+  const answerMode = selfKnowledge.answerMode
+    ? ` using ${formatCategoryLabel(selfKnowledge.answerMode).toLowerCase()}`
+    : "";
+  if (selfKnowledge.latestTurnId) {
+    return `Answered from local ${topic} evidence${answerMode} with reference to turn ${formatTurnSource(selfKnowledge.latestTurnId)}.`;
+  }
+
+  return `Answered from local ${topic} evidence${answerMode}.`;
+}
+
 function describeAssistantAnswerMode(voiceState) {
+  if (voiceState.provider?.selfKnowledge?.status === "used") {
+    return "Local self-knowledge answer";
+  }
+
   const lookupStatus = voiceState.provider?.lookup?.status;
 
   if (lookupStatus === "used") {

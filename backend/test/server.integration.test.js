@@ -11,9 +11,19 @@ const ORIGINAL_CLASSIFY_LOOKUP = provider.classifyExternalLookupNeed;
 const ORIGINAL_FETCH_LOOKUP_ARTIFACTS = provider.fetchExternalLookupArtifacts;
 const ORIGINAL_COMPOSE_LOOKUP_RESULT = provider.composeExternalLookupResult;
 const ORIGINAL_SYNTHESIZE_SPEECH = provider.synthesizeSpeech;
+const ORIGINAL_STREAM_CHAT = provider.streamChat;
 
 test.before(async () => {
   await app.ready();
+});
+
+test.afterEach(() => {
+  provider.isConfigured = ORIGINAL_IS_CONFIGURED;
+  provider.classifyExternalLookupNeed = ORIGINAL_CLASSIFY_LOOKUP;
+  provider.fetchExternalLookupArtifacts = ORIGINAL_FETCH_LOOKUP_ARTIFACTS;
+  provider.composeExternalLookupResult = ORIGINAL_COMPOSE_LOOKUP_RESULT;
+  provider.synthesizeSpeech = ORIGINAL_SYNTHESIZE_SPEECH;
+  provider.streamChat = ORIGINAL_STREAM_CHAT;
 });
 
 test.after(async () => {
@@ -22,6 +32,7 @@ test.after(async () => {
   provider.fetchExternalLookupArtifacts = ORIGINAL_FETCH_LOOKUP_ARTIFACTS;
   provider.composeExternalLookupResult = ORIGINAL_COMPOSE_LOOKUP_RESULT;
   provider.synthesizeSpeech = ORIGINAL_SYNTHESIZE_SPEECH;
+  provider.streamChat = ORIGINAL_STREAM_CHAT;
   await app.close();
 });
 
@@ -85,6 +96,119 @@ test("debug turn endpoint returns parsed provider metadata", async () => {
   assert.equal(body.turn.provider_json.lookup.answerStatus, "answered");
   assert.equal(body.turn.provider_json.lookup.retrievalStatus, "results_found");
   assert.equal(body.turn.provider_json.lookup.answerExtractability, "direct_answer");
+});
+
+test("self-knowledge debug endpoint returns overview and latest turn explanation", async () => {
+  const response = await app.inject({
+    method: "GET",
+    url: "/api/debug/self-knowledge",
+  });
+
+  assert.equal(response.statusCode, 200);
+  const body = response.json();
+  assert.match(body.selfKnowledge.overview.architectureSummary, /React frontend/i);
+  assert.ok(Array.isArray(body.selfKnowledge.overview.sampleQuestions));
+  assert.ok(Object.prototype.hasOwnProperty.call(body.selfKnowledge, "latestFailureExplanation"));
+});
+
+test("retry endpoint answers self-knowledge questions without invoking lookup or chat", async () => {
+  provider.isConfigured = () => false;
+  provider.classifyExternalLookupNeed = async () => {
+    throw new Error("lookup should not run for self-knowledge");
+  };
+  provider.fetchExternalLookupArtifacts = async () => {
+    throw new Error("lookup artifacts should not run for self-knowledge");
+  };
+  provider.streamChat = async () => {
+    throw new Error("chat should not run for self-knowledge");
+  };
+  provider.synthesizeSpeech = async ({ text }) => ({
+    audioBuffer: Buffer.from("audio"),
+    mimeType: "audio/mpeg",
+    speechInput: text,
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/voice/retry",
+    payload: {
+      sessionId: "self-knowledge-test-session",
+      turnId: `self-knowledge-${randomUUID()}`,
+      transcriptText: "How do you work?",
+      lookupPrivacyMode: "strict",
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  const turn = extractTurnComplete(response.body);
+
+  assert.equal(turn.provider.provider, "local_self_knowledge");
+  assert.equal(turn.provider.selfKnowledge.topic, "architecture");
+  assert.equal(turn.provider.lookup.status, "not_applicable");
+  assert.match(turn.assistantText, /React frontend/i);
+});
+
+test("retry endpoint answers failure-debug self-knowledge questions from stored evidence", async () => {
+  provider.isConfigured = () => false;
+  provider.classifyExternalLookupNeed = async () => {
+    throw new Error("lookup should not run for self-knowledge");
+  };
+  provider.fetchExternalLookupArtifacts = async () => {
+    throw new Error("lookup artifacts should not run for self-knowledge");
+  };
+  provider.streamChat = async () => {
+    throw new Error("chat should not run for self-knowledge");
+  };
+  provider.synthesizeSpeech = async ({ text }) => ({
+    audioBuffer: Buffer.from("audio"),
+    mimeType: "audio/mpeg",
+    speechInput: text,
+  });
+
+  store.insertTurn({
+    id: `failure-turn-${randomUUID()}`,
+    session_id: "failure-session",
+    created_at: new Date().toISOString(),
+    transcript_text: "Say hello.",
+    assistant_text: "Hello there.",
+    turn_status: "completed_with_tts_failure",
+    context_json: JSON.stringify({ currentUserText: "Say hello." }),
+    latency_json: JSON.stringify({ sttComplete: new Date().toISOString(), chatFinalToken: new Date().toISOString() }),
+    token_json: JSON.stringify({ provider: { total_tokens: 10 } }),
+    provider_json: JSON.stringify({
+      provider: "openai",
+      chatModel: "gpt-4.1-mini",
+      ttsModel: "gpt-4o-mini-tts",
+      lookup: {
+        status: "not_needed",
+      },
+    }),
+    failure_json: JSON.stringify({
+      stage: "tts",
+      message: "Audio generation failed.",
+    }),
+    transcript_mime_type: "retry/text",
+    audio_bytes: 0,
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/voice/retry",
+    payload: {
+      sessionId: "self-knowledge-debug-session",
+      turnId: `self-knowledge-debug-${randomUUID()}`,
+      transcriptText: "Why didn't audio play?",
+      lookupPrivacyMode: "strict",
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  const turn = extractTurnComplete(response.body);
+
+  assert.equal(turn.provider.provider, "local_self_knowledge");
+  assert.equal(turn.provider.selfKnowledge.topic, "debug_help");
+  assert.ok(turn.provider.selfKnowledge.nextChecks.some((item) => /assistant text/i.test(item)));
+  assert.match(turn.assistantText, /Confirmed evidence:/i);
 });
 
 test("retry endpoint reuses cached lookup retrieval artifacts on repeated current-info questions", async () => {

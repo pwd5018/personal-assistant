@@ -2,7 +2,7 @@ import { config } from "./config.js";
 import { clampByTokenBudget, estimateTokens } from "./tokenBudget.js";
 import { store } from "./store.js";
 
-export function buildContextPackage(currentUserText) {
+export function buildContextPackage(currentUserText, options = {}) {
   const recentTurns = store.getRecentCompletedTurns(4);
   const recentTurnPreview = recentTurns.map((turn) => ({
     user: turn.transcript_text || "",
@@ -26,6 +26,14 @@ export function buildContextPackage(currentUserText) {
 
   const summaryText = trimToTokenEstimate(summaryRow.summary_text, 300);
   const summaryTokens = estimateTokens(summaryText);
+  const selfKnowledge = options.selfKnowledge || null;
+  const recentExplainability = options.recentExplainability || null;
+  const selfKnowledgeTokens = estimateTokens(
+    selfKnowledge ? JSON.stringify(selfKnowledge) : ""
+  );
+  const recentExplainabilityTokens = estimateTokens(
+    recentExplainability ? JSON.stringify(recentExplainability) : ""
+  );
 
   const packagePreview = {
     systemPrompt: config.systemPrompt,
@@ -37,15 +45,21 @@ export function buildContextPackage(currentUserText) {
     })),
     recentTurns: recentBudget.items.reverse(),
     currentUserText,
+    selfKnowledge,
+    recentExplainability,
     tokenBudget: {
       recentTurns: recentBudget.estimatedTokens,
       rollingSummary: summaryTokens,
       approvedFacts: factsBudget.estimatedTokens,
+      selfKnowledge: selfKnowledgeTokens,
+      recentExplainability: recentExplainabilityTokens,
       currentUserText: estimateTokens(currentUserText),
       totalEstimated:
         recentBudget.estimatedTokens +
         summaryTokens +
         factsBudget.estimatedTokens +
+        selfKnowledgeTokens +
+        recentExplainabilityTokens +
         estimateTokens(currentUserText),
     },
   };
