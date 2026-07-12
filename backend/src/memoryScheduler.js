@@ -13,11 +13,12 @@ class MemoryScheduler {
     }
 
     this.pendingTurnIds.add(turn.id);
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       this.extractForTurn(turn).catch((error) => {
         console.error("Candidate fact extraction failed:", error);
       });
     }, 0);
+    timer?.unref?.();
   }
 
   async extractForTurn(turn) {

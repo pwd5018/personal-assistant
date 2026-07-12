@@ -12,6 +12,10 @@ const FALLBACK_LOOKUP_SIGNALS = [
     pattern: /\b(news|headline|headlines)\b/i,
   },
   {
+    label: "reference_fact",
+    pattern: /\b(population|population of|full moon|moon phase|eclipse|sunrise|sunset|time zone|timezone)\b/i,
+  },
+  {
     label: "markets",
     pattern: /\b(stock|price|market cap|earnings|exchange rate)\b/i,
   },
@@ -261,6 +265,10 @@ function inferFallbackQuestionKind(question, matchedSignals) {
 
   if (matchedSignals.includes("hours_or_availability") && !looksLikeNonHoursClosureQuestion(normalizedQuestion)) {
     return "hours";
+  }
+
+  if (matchedSignals.includes("reference_fact")) {
+    return "other";
   }
 
   if (matchedSignals.includes("sports")) {

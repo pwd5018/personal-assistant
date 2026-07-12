@@ -212,6 +212,8 @@ export default function App() {
     latestTurnExplanation: null,
     latestFailureExplanation: null,
   });
+  const [turnExplainabilityById, setTurnExplainabilityById] = useState({});
+  const [selectedExplainTurnId, setSelectedExplainTurnId] = useState("");
   const [appStatus, setAppStatus] = useState({
     backendReachable: false,
     providerConfigured: false,
@@ -256,6 +258,7 @@ export default function App() {
     voiceState.phase !== "thinking" &&
     voiceState.phase !== "cancelling";
   const avatarState = AVATAR_STATES[voiceState.phase] || AVATAR_STATES.idle;
+  const selectedExplainTurn = history.find((turn) => turn.id === selectedExplainTurnId) || null;
   const pendingFacts = candidateFacts.filter((fact) => fact.status === "pending");
   const resolvedFacts = candidateFacts.filter((fact) => fact.status !== "pending");
   const pendingFactGroups = MEMORY_REVIEW_GROUPS.map((group) => ({
@@ -288,18 +291,20 @@ export default function App() {
       const debugData = await debugResponse.json();
       const memoryData = await memoryResponse.json();
       const selfKnowledgeData = await selfKnowledgeResponse.json();
+      const nextHistory = debugData.turns || [];
       setAppStatus({
         backendReachable: Boolean(healthData.ok),
         providerConfigured: Boolean(healthData.providerConfigured),
         checkedAt: new Date().toISOString(),
       });
-      setHistory(debugData.turns || []);
+      setHistory(nextHistory);
       setRollingSummary(debugData.rollingSummary || { summary_text: "", updated_at: "" });
       setCandidateFacts(memoryData.candidateFacts || []);
       setApprovedFacts(memoryData.approvedFacts || []);
       setSelfKnowledgeState(
         selfKnowledgeData.selfKnowledge || { overview: null, latestTurnExplanation: null, latestFailureExplanation: null }
       );
+      setSelectedExplainTurnId((current) => (current && !nextHistory.some((turn) => turn.id === current) ? "" : current));
     } catch (error) {
       setAppStatus({
         backendReachable: false,
@@ -345,6 +350,19 @@ export default function App() {
     }
 
     await loadDebugState();
+  }
+
+  async function loadTurnExplainability(turnId) {
+    const response = await fetch(`${API_BASE}/api/debug/turns/${turnId}`);
+    if (!response.ok) {
+      throw new Error(`Turn explainability fetch failed with ${response.status}.`);
+    }
+
+    const data = await response.json();
+    setTurnExplainabilityById((current) => ({
+      ...current,
+      [turnId]: data.explainability || null,
+    }));
   }
 
   async function ensureRecorder() {
@@ -506,6 +524,9 @@ export default function App() {
     formData.append("turnId", turnId);
     formData.append("captureEndedAt", new Date().toISOString());
     formData.append("lookupPrivacyMode", lookupPrivacyMode);
+    if (selectedExplainTurnId) {
+      formData.append("explainTurnId", selectedExplainTurnId);
+    }
     formData.append("audio", blob, "voice-input.webm");
 
     await consumeTurnStream({
@@ -531,6 +552,7 @@ export default function App() {
             turnId,
             transcriptText,
             lookupPrivacyMode,
+            explainTurnId: selectedExplainTurnId || null,
           }),
           signal: createActiveFetchController().signal,
         }),
@@ -1042,6 +1064,12 @@ export default function App() {
                 Retry last turn
               </button>
             </div>
+            {selectedExplainTurn ? (
+              <p className="card-note">
+                Explain target: turn {formatTurnSource(selectedExplainTurn.id)} from{" "}
+                {new Date(selectedExplainTurn.created_at).toLocaleString()}.
+              </p>
+            ) : null}
           </section>
         ) : mode === "memories" ? (
           <section className="memories-panel">
@@ -1338,10 +1366,13 @@ export default function App() {
                     <>
                       <p>{selfKnowledgeState.latestTurnExplanation.summary}</p>
                       <small className="card-note">
-                        Turn {formatTurnSource(selfKnowledgeState.latestTurnExplanation.latestTurnId)}
+                        Latest stored turn {formatTurnSource(selfKnowledgeState.latestTurnExplanation.latestTurnId)}
                         {selfKnowledgeState.latestTurnExplanation.answerMode
                           ? ` â€¢ ${formatCategoryLabel(selfKnowledgeState.latestTurnExplanation.answerMode)}`
                           : ""}
+                      </small>
+                      <small className="card-note">
+                        This stays on the latest stored turn. Use "Use as explain target" below to aim the next live self-knowledge question at a different turn.
                       </small>
                       {renderExplainabilitySections(selfKnowledgeState.latestTurnExplanation)}
                     </>
@@ -1357,10 +1388,13 @@ export default function App() {
                     <>
                       <p>{selfKnowledgeState.latestFailureExplanation.summary}</p>
                       <small className="card-note">
-                        Turn {formatTurnSource(selfKnowledgeState.latestFailureExplanation.latestTurnId)}
+                        Latest failed or degraded turn {formatTurnSource(selfKnowledgeState.latestFailureExplanation.latestTurnId)}
                         {selfKnowledgeState.latestFailureExplanation.failureCategory
                           ? ` â€¢ ${formatCategoryLabel(selfKnowledgeState.latestFailureExplanation.failureCategory)}`
                           : ""}
+                      </small>
+                      <small className="card-note">
+                        This stays global. A selected explain target only changes the next self-knowledge question you ask live.
                       </small>
                       {renderExplainabilitySections(selfKnowledgeState.latestFailureExplanation)}
                     </>
@@ -1689,7 +1723,12 @@ export default function App() {
                       <strong>{new Date(turn.created_at).toLocaleString()}</strong>
                       <p className="history-subtitle">{summarizeTurn(turn)}</p>
                     </div>
-                    <span className={`status-pill status-${turn.turn_status}`}>{turn.turn_status}</span>
+                    <div>
+                      <span className={`status-pill status-${turn.turn_status}`}>{turn.turn_status}</span>
+                      {selectedExplainTurnId === turn.id ? (
+                        <span className="status-pill memory-category-pill">Explain target</span>
+                      ) : null}
+                    </div>
                   </header>
                   <div className="history-copy">
                     <p><strong>User:</strong> {turn.transcript_text || "(empty)"}</p>
@@ -1699,6 +1738,16 @@ export default function App() {
                       <p><strong>Self-knowledge:</strong> {describeStoredTurnSelfKnowledge(turn)}</p>
                     ) : null}
                     {renderLookupSources(parseStoredJson(turn.provider_json)?.lookup?.citations, "Sources")}
+                    <p>
+                      <button
+                        className="secondary"
+                        onClick={() =>
+                          setSelectedExplainTurnId((current) => (current === turn.id ? "" : turn.id))
+                        }
+                      >
+                        {selectedExplainTurnId === turn.id ? "Clear explain target" : "Use as explain target"}
+                      </button>
+                    </p>
                   </div>
                   <details>
                     <summary>Technical details</summary>
@@ -1712,6 +1761,102 @@ export default function App() {
                   <details>
                     <summary>Context package</summary>
                     <pre>{formatDebugJson(parseStoredJson(turn.context_json))}</pre>
+                  </details>
+                  <details
+                    onToggle={(event) => {
+                      if (!event.currentTarget.open || turnExplainabilityById[turn.id] !== undefined) {
+                        return;
+                      }
+
+                      loadTurnExplainability(turn.id).catch((error) => {
+                        dispatch({
+                          type: "TURN_ERROR",
+                          turnId: currentTurnIdRef.current,
+                          failure: normalizeFailure({
+                            stage: "debug",
+                            message: error.message,
+                          }),
+                        });
+                      });
+                    }}
+                  >
+                    <summary>Explain this turn</summary>
+                    {turnExplainabilityById[turn.id] ? (
+                      <div className="debug-grid two-column">
+                        <div className="debug-card nested-debug-card">
+                          <label>Reply explanation</label>
+                          <p>{turnExplainabilityById[turn.id].summary}</p>
+                          <small className="card-note">
+                            {turnExplainabilityById[turn.id].answerMode
+                              ? formatCategoryLabel(turnExplainabilityById[turn.id].answerMode)
+                              : "Unknown answer mode"}
+                          </small>
+                          {renderExplainabilitySections(turnExplainabilityById[turn.id])}
+                        </div>
+                        <div className="debug-card nested-debug-card">
+                          <label>Data used</label>
+                          <p>{turnExplainabilityById[turn.id].dataUsage?.summary || "No data-usage summary recorded."}</p>
+                          <small className="card-note">
+                            {turnExplainabilityById[turn.id].routing?.approvedFactsImpact || "No approved-facts note recorded."}
+                          </small>
+                          {turnExplainabilityById[turn.id].dataUsage ? (
+                            <pre>{formatDebugJson(turnExplainabilityById[turn.id].dataUsage)}</pre>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : turnExplainabilityById[turn.id] === null ? (
+                      <p>No explainability details are available for this turn.</p>
+                    ) : (
+                      <p>Open this panel to load explainability for the selected turn.</p>
+                    )}
+                  </details>
+                  <details>
+                    <summary>Turn storage and routing</summary>
+                    {turnExplainabilityById[turn.id] ? (
+                      <div className="debug-grid two-column">
+                        <div className="debug-card nested-debug-card">
+                          <label>Stored locally</label>
+                          <p>{turnExplainabilityById[turn.id].storedArtifacts?.summary || "No storage summary recorded."}</p>
+                          {turnExplainabilityById[turn.id].storedArtifacts ? (
+                            <pre>{formatDebugJson(turnExplainabilityById[turn.id].storedArtifacts)}</pre>
+                          ) : null}
+                        </div>
+                        <div className="debug-card nested-debug-card">
+                          <label>Routing summary</label>
+                          <p>{turnExplainabilityById[turn.id].routing?.summary || "No routing summary recorded."}</p>
+                          {turnExplainabilityById[turn.id].routing ? (
+                            <pre>{formatDebugJson(turnExplainabilityById[turn.id].routing)}</pre>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : (
+                      <p>Load explainability first to inspect storage and routing details.</p>
+                    )}
+                  </details>
+                  <details>
+                    <summary>Failure guidance</summary>
+                    {turnExplainabilityById[turn.id] ? (
+                      <div className="debug-grid two-column">
+                        <div className="debug-card nested-debug-card">
+                          <label>Failure guidance</label>
+                          {turnExplainabilityById[turn.id].failure ? (
+                            <>
+                              <p>{turnExplainabilityById[turn.id].failure.summary}</p>
+                              <small className="card-note">
+                                {turnExplainabilityById[turn.id].failure.failureCategory
+                                  ? formatCategoryLabel(turnExplainabilityById[turn.id].failure.failureCategory)
+                                  : "Failure recorded"}
+                              </small>
+                              {renderExplainabilitySections(turnExplainabilityById[turn.id].failure)}
+                            </>
+                          ) : (
+                            <p>No failure-specific guidance was recorded for this turn.</p>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <p>Load explainability first to inspect failure guidance.</p>
+                    )}
                   </details>
                 </article>
               ))}
@@ -1840,7 +1985,7 @@ function summarizeTurn(turn) {
   const selfKnowledge = parseStoredJson(turn.provider_json)?.selfKnowledge;
 
   if (selfKnowledge?.status === "used") {
-    return `Answered from local self-knowledge about ${formatCategoryLabel(selfKnowledge.topic || "self_knowledge").toLowerCase()}`;
+    return `Answered from local self-knowledge about ${formatCategoryLabel(selfKnowledge.topic || "self_knowledge").toLowerCase()}${describeSelfKnowledgeTurnReference(selfKnowledge)}`;
   }
 
   if (failure?.stage) {
@@ -2056,7 +2201,7 @@ function describeLiveLookup(voiceState) {
   const lookupStatus = voiceState.provider?.lookup?.status;
   const cacheStatus = voiceState.provider?.lookup?.cache?.status;
   if (voiceState.provider?.selfKnowledge?.status === "used") {
-    return `Local self-knowledge (${formatCategoryLabel(voiceState.provider.selfKnowledge.topic || "self_knowledge").toLowerCase()})`;
+    return `Local self-knowledge (${formatCategoryLabel(voiceState.provider.selfKnowledge.topic || "self_knowledge").toLowerCase()}${describeSelfKnowledgeTurnReference(voiceState.provider.selfKnowledge)})`;
   }
   if (lookupStatus === "used") {
     const citationCount = voiceState.provider?.lookup?.citations?.length || 0;
@@ -2134,16 +2279,12 @@ function describeStoredTurnSelfKnowledge(turn) {
   const answerMode = selfKnowledge.answerMode
     ? ` using ${formatCategoryLabel(selfKnowledge.answerMode).toLowerCase()}`
     : "";
-  if (selfKnowledge.latestTurnId) {
-    return `Answered from local ${topic} evidence${answerMode} with reference to turn ${formatTurnSource(selfKnowledge.latestTurnId)}.`;
-  }
-
-  return `Answered from local ${topic} evidence${answerMode}.`;
+  return `Answered from local ${topic} evidence${answerMode}${describeSelfKnowledgeTurnReference(selfKnowledge, { sentence: true })}.`;
 }
 
 function describeAssistantAnswerMode(voiceState) {
   if (voiceState.provider?.selfKnowledge?.status === "used") {
-    return "Local self-knowledge answer";
+    return `Local self-knowledge answer${describeSelfKnowledgeTurnReference(voiceState.provider.selfKnowledge)}`;
   }
 
   const lookupStatus = voiceState.provider?.lookup?.status;
@@ -2161,6 +2302,26 @@ function describeAssistantAnswerMode(voiceState) {
   }
 
   return "Model-only answer";
+}
+
+function describeSelfKnowledgeTurnReference(selfKnowledge, options = {}) {
+  const requestedTurnId = selfKnowledge?.requestedTurnId;
+  const latestTurnId = selfKnowledge?.latestTurnId;
+  const sentence = options.sentence === true;
+
+  if (requestedTurnId) {
+    return sentence
+      ? ` with selected turn ${formatTurnSource(requestedTurnId)}`
+      : `, selected turn ${formatTurnSource(requestedTurnId)}`;
+  }
+
+  if (latestTurnId) {
+    return sentence
+      ? ` with latest turn ${formatTurnSource(latestTurnId)}`
+      : `, latest turn ${formatTurnSource(latestTurnId)}`;
+  }
+
+  return "";
 }
 
 function lookupStatusPillClass(status) {

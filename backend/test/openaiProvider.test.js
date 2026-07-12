@@ -364,3 +364,34 @@ test("noisy multi-location summaries are not passed through as direct generic an
     "I couldn't find a reliable current answer from the sources I found."
   );
 });
+
+test("uncertain generic fact lookups do not pass through concrete text with weak evidence", () => {
+  const fallback = buildLookupAnswerFallback({
+    question: "Is there a full moon tonight in New York City?",
+    lookupPlan: {
+      questionKind: "other",
+      resolutionStatus: "unresolved",
+      queryEnrichment: null,
+    },
+    compactedText:
+      "No, there's no full moon tonight in New York City. The next full moon will occur on Wednesday, July 29, 2026, at 10:35 a.m. Eastern Daylight Time.",
+    citations: [{ title: "Moon phases", url: "https://example.com/moon" }],
+    webSearches: [{ id: "other-search-3" }],
+    answerStatus: "uncertain",
+    evidence: {
+      evidenceStatus: "missing",
+      supportsDirectAnswer: false,
+      confidence: 0.3,
+    },
+    extraction: {
+      retrievalStatus: "results_found",
+      answerExtractability: "insufficient",
+      resultTopicMatch: "low",
+    },
+  });
+
+  assert.equal(
+    fallback.displayAnswer,
+    "I couldn't find a reliable current answer from the sources I found."
+  );
+});

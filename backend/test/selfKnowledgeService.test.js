@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildSelfKnowledgeOverview, buildSelfKnowledgeResponse, __testables } from "../src/selfKnowledgeService.js";
+import {
+  buildSelfKnowledgeOverview,
+  buildSelfKnowledgeResponse,
+  buildTurnExplainability,
+  __testables,
+} from "../src/selfKnowledgeService.js";
+import { store } from "../src/store.js";
 
 test("self-knowledge topic classifier recognizes first-pass questions", () => {
   assert.equal(__testables.classifySelfKnowledgeTopic("how do you work"), "architecture");
@@ -9,6 +15,9 @@ test("self-knowledge topic classifier recognizes first-pass questions", () => {
   assert.equal(__testables.classifySelfKnowledgeTopic("what model handled my last turn"), "provider_path");
   assert.equal(__testables.classifySelfKnowledgeTopic("why did you answer that way"), "recent_reply");
   assert.equal(__testables.classifySelfKnowledgeTopic("why didn't audio play"), "debug_help");
+  assert.equal(__testables.classifySelfKnowledgeTopic("what data did you use for that turn"), "turn_data_usage");
+  assert.equal(__testables.classifySelfKnowledgeTopic("what was stored from that turn"), "turn_storage");
+  assert.equal(__testables.classifySelfKnowledgeTopic("was that model-only or lookup-backed"), "turn_routing");
   assert.equal(__testables.classifySelfKnowledgeTopic("tell me a joke"), null);
 });
 
@@ -85,4 +94,102 @@ test("failure debug explanation suggests targeted next checks", () => {
   assert.match(explanation.debugAnswer, /speech synthesis/i);
   assert.ok(explanation.nextChecks.some((item) => /assistant text/i.test(item)));
   assert.equal(explanation.summary, "TTS issue on turn b0e793d1.");
+});
+
+test("selected turn explainability returns reply and failure sections", () => {
+  const explainability = buildTurnExplainability({
+    id: "manual-failure-b0e793d1-a5d7-46ec-b7a9-27d64fcfb402",
+    turn_status: "completed_with_tts_failure",
+    assistant_text: "Hello there.",
+    provider_json: {
+      provider: "openai",
+      api: "chat_completions",
+      chatModel: "gpt-4.1-mini",
+      ttsModel: "gpt-4o-mini-tts",
+      lookup: {
+        status: "not_needed",
+      },
+    },
+    context_json: {
+      approvedFacts: [],
+      recentTurns: [],
+      rollingSummary: "",
+    },
+    latency_json: {
+      sttComplete: new Date().toISOString(),
+      chatFinalToken: new Date().toISOString(),
+    },
+    token_json: {
+      provider: {
+        total_tokens: 12,
+      },
+    },
+    failure_json: {
+      stage: "tts",
+      message: "Audio generation failed.",
+    },
+  });
+
+  assert.equal(explainability.answerMode, "text_reply_with_tts_failure");
+  assert.ok(explainability.evidence.length >= 4);
+  assert.match(explainability.dataUsage.summary, /current utterance/i);
+  assert.equal(explainability.dataUsage.lookupUsed, false);
+  assert.ok(explainability.storedArtifacts.storedFields.includes("failure_json"));
+  assert.equal(explainability.routing.lookupBacked, false);
+  assert.match(explainability.routing.approvedFactsImpact, /No approved facts/i);
+  assert.equal(explainability.failure?.failureCategory, "tts");
+  assert.equal(explainability.failure?.summary, "TTS issue on turn b0e793d1.");
+});
+
+test("turn-specific self-knowledge response uses latest turn explainability buckets", () => {
+  const response = buildSelfKnowledgeResponse("What data did you use for that turn?");
+
+  assert.equal(response.topic, "turn_data_usage");
+  assert.ok(response.latestTurnId);
+  assert.match(response.text, /approved facts|external lookup|current utterance/i);
+});
+
+test("turn-specific self-knowledge response honors explicit explain turn selection", () => {
+  const turnId = `selected-turn-${Date.now()}`;
+  store.insertTurn({
+    id: turnId,
+    session_id: "selected-turn-session",
+    created_at: new Date().toISOString(),
+    transcript_text: "Tell me something current.",
+    assistant_text: "Here is the latest weather update.",
+    turn_status: "completed",
+    context_json: JSON.stringify({
+      currentUserText: "Tell me something current.",
+      approvedFacts: ["The user likes short answers."],
+      recentTurns: [{ user: "Hello", assistant: "Hi" }],
+      rollingSummary: "User prefers direct answers.",
+    }),
+    latency_json: JSON.stringify({ chatFinalToken: new Date().toISOString() }),
+    token_json: JSON.stringify({ provider: { total_tokens: 18 } }),
+    provider_json: JSON.stringify({
+      provider: "openai",
+      api: "responses",
+      chatModel: "gpt-4.1-mini",
+      ttsModel: "gpt-4o-mini-tts",
+      lookup: {
+        status: "used",
+        privacyMode: "strict",
+        questionKind: "weather",
+        retrievalSource: "cache",
+        citations: [{ title: "Weather", url: "https://example.com/weather" }],
+      },
+    }),
+    failure_json: null,
+    transcript_mime_type: "retry/text",
+    audio_bytes: 0,
+  });
+
+  const response = buildSelfKnowledgeResponse("What data did you use for that turn?", {
+    explainTurnId: turnId,
+  });
+
+  assert.equal(response.latestTurnId, turnId);
+  assert.equal(response.explainability.latestTurnId, turnId);
+  assert.equal(response.explainability.dataUsage.lookupUsed, true);
+  assert.match(response.text, /lookup-backed|external lookup|approved facts/i);
 });

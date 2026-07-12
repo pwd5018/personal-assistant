@@ -21,6 +21,7 @@ import { provider } from "./provider/index.js";
 import {
   buildSelfKnowledgeDebugState,
   buildSelfKnowledgeResponse,
+  buildTurnExplainability,
 } from "./selfKnowledgeService.js";
 import { store } from "./store.js";
 import { summaryScheduler } from "./summaryScheduler.js";
@@ -36,6 +37,10 @@ await app.register(multipart, {
   limits: {
     fileSize: 20 * 1024 * 1024,
   },
+});
+
+app.addHook("onClose", async () => {
+  summaryScheduler.stop();
 });
 
 app.get("/api/health", async () => ({
@@ -61,6 +66,7 @@ app.post("/api/voice/cancel", async (request, reply) => {
 
 app.post("/api/voice/retry", async (request, reply) => {
   const { sessionId = "default-session", turnId = randomUUID(), transcriptText = "" } = request.body || {};
+  const explainTurnId = typeof request.body?.explainTurnId === "string" ? request.body.explainTurnId.trim() : "";
   const lookupPrivacyMode =
     request.body?.lookupPrivacyMode === "balanced" || request.body?.lookupPrivacyMode === "strict"
       ? request.body.lookupPrivacyMode
@@ -122,6 +128,7 @@ app.post("/api/voice/retry", async (request, reply) => {
     sessionId,
     turnId,
     transcriptText,
+    explainTurnId,
     lookupPrivacyMode,
     transcriptMimeType: "retry/text",
     audioBytes: 0,
@@ -208,7 +215,10 @@ app.get("/api/debug/turns/:id", async (request, reply) => {
     return { error: "Turn not found." };
   }
 
-  return { turn };
+  return {
+    turn,
+    explainability: buildTurnExplainability(turn),
+  };
 });
 
 app.post("/api/voice/turn", async (request, reply) => {
@@ -246,6 +256,7 @@ app.post("/api/voice/turn", async (request, reply) => {
       fields.lookupPrivacyMode?.value === "balanced" || fields.lookupPrivacyMode?.value === "strict"
         ? fields.lookupPrivacyMode.value
         : null;
+    const explainTurnId = fields.explainTurnId?.value ? String(fields.explainTurnId.value).trim() : "";
 
     const existing = activeTurns.get(sessionId);
     if (existing) {
@@ -316,6 +327,7 @@ app.post("/api/voice/turn", async (request, reply) => {
       sessionId,
       turnId: activeTurnId,
       transcriptText: transcription.text,
+      explainTurnId,
       lookupPrivacyMode,
       transcriptMimeType: file.mimetype,
       audioBytes: audioBuffer.byteLength,
@@ -343,6 +355,7 @@ async function runAssistantTurn({
   sessionId,
   turnId,
   transcriptText,
+  explainTurnId,
   lookupPrivacyMode,
   transcriptMimeType,
   audioBytes,
@@ -352,7 +365,9 @@ async function runAssistantTurn({
   reply,
 }) {
   try {
-    const selfKnowledgeResponse = buildSelfKnowledgeResponse(transcriptText);
+    const selfKnowledgeResponse = buildSelfKnowledgeResponse(transcriptText, {
+      explainTurnId: explainTurnId || null,
+    });
     const contextPackage = buildContextPackage(transcriptText, {
       selfKnowledge: selfKnowledgeResponse?.context || null,
       recentExplainability: selfKnowledgeResponse?.explainability || null,
@@ -393,6 +408,7 @@ async function runAssistantTurn({
           nextChecks: selfKnowledgeResponse.explainability?.nextChecks || [],
           answerMode: selfKnowledgeResponse.explainability?.answerMode || selfKnowledgeResponse.topic,
           latestTurnId: selfKnowledgeResponse.latestTurnId,
+          requestedTurnId: explainTurnId || null,
         },
         lookup: {
           status: "not_applicable",

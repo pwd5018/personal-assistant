@@ -23,3 +23,17 @@ test("what-time-close questions classify as hours lookups", () => {
   assert.equal(decision.needed, true);
   assert.equal(decision.questionKind, "hours");
 });
+
+test("reference fact questions like population trigger lookup", () => {
+  const decision = fallbackExternalLookupDecision("What's the population of Tokyo?");
+
+  assert.equal(decision.needed, true);
+  assert.equal(decision.questionKind, "other");
+});
+
+test("astronomy fact questions like full moon trigger lookup", () => {
+  const decision = fallbackExternalLookupDecision("Is there a full moon tonight in New York City?");
+
+  assert.equal(decision.needed, true);
+  assert.equal(decision.questionKind, "other");
+});

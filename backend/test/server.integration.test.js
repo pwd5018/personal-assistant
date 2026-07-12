@@ -96,6 +96,11 @@ test("debug turn endpoint returns parsed provider metadata", async () => {
   assert.equal(body.turn.provider_json.lookup.answerStatus, "answered");
   assert.equal(body.turn.provider_json.lookup.retrievalStatus, "results_found");
   assert.equal(body.turn.provider_json.lookup.answerExtractability, "direct_answer");
+  assert.equal(body.explainability.answerMode, "current_source_answer");
+  assert.equal(body.explainability.dataUsage.lookupUsed, true);
+  assert.equal(body.explainability.routing.lookupBacked, true);
+  assert.ok(Array.isArray(body.explainability.storedArtifacts.storedFields));
+  assert.equal(body.explainability.failure, null);
 });
 
 test("self-knowledge debug endpoint returns overview and latest turn explanation", async () => {
@@ -209,6 +214,115 @@ test("retry endpoint answers failure-debug self-knowledge questions from stored 
   assert.equal(turn.provider.selfKnowledge.topic, "debug_help");
   assert.ok(turn.provider.selfKnowledge.nextChecks.some((item) => /assistant text/i.test(item)));
   assert.match(turn.assistantText, /Confirmed evidence:/i);
+});
+
+test("retry endpoint answers turn-data self-knowledge questions from latest turn evidence", async () => {
+  provider.isConfigured = () => false;
+  provider.classifyExternalLookupNeed = async () => {
+    throw new Error("lookup should not run for self-knowledge");
+  };
+  provider.fetchExternalLookupArtifacts = async () => {
+    throw new Error("lookup artifacts should not run for self-knowledge");
+  };
+  provider.streamChat = async () => {
+    throw new Error("chat should not run for self-knowledge");
+  };
+  provider.synthesizeSpeech = async ({ text }) => ({
+    audioBuffer: Buffer.from("audio"),
+    mimeType: "audio/mpeg",
+    speechInput: text,
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/voice/retry",
+    payload: {
+      sessionId: "self-knowledge-turn-data-session",
+      turnId: `self-knowledge-turn-data-${randomUUID()}`,
+      transcriptText: "What data did you use for that turn?",
+      lookupPrivacyMode: "strict",
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  const turn = extractTurnComplete(response.body);
+
+  assert.equal(turn.provider.provider, "local_self_knowledge");
+  assert.equal(turn.provider.selfKnowledge.topic, "turn_data_usage");
+  assert.match(turn.assistantText, /current utterance|approved facts|external lookup/i);
+});
+
+test("retry endpoint anchors self-knowledge questions to the requested explain turn", async () => {
+  provider.isConfigured = () => false;
+  provider.classifyExternalLookupNeed = async () => {
+    throw new Error("lookup should not run for self-knowledge");
+  };
+  provider.fetchExternalLookupArtifacts = async () => {
+    throw new Error("lookup artifacts should not run for self-knowledge");
+  };
+  provider.streamChat = async () => {
+    throw new Error("chat should not run for self-knowledge");
+  };
+  provider.synthesizeSpeech = async ({ text }) => ({
+    audioBuffer: Buffer.from("audio"),
+    mimeType: "audio/mpeg",
+    speechInput: text,
+  });
+
+  const explainTurnId = `anchored-turn-${randomUUID()}`;
+  store.insertTurn({
+    id: explainTurnId,
+    session_id: "anchored-session",
+    created_at: new Date().toISOString(),
+    transcript_text: "Check the weather.",
+    assistant_text: "It is 72 and sunny.",
+    turn_status: "completed",
+    context_json: JSON.stringify({
+      currentUserText: "Check the weather.",
+      approvedFacts: ["The user prefers concise answers."],
+      recentTurns: [{ user: "Hi", assistant: "Hello" }],
+      rollingSummary: "Keep answers short.",
+    }),
+    latency_json: JSON.stringify({ chatFinalToken: new Date().toISOString() }),
+    token_json: JSON.stringify({ provider: { total_tokens: 14 } }),
+    provider_json: JSON.stringify({
+      provider: "openai",
+      api: "responses",
+      chatModel: "gpt-4.1-mini",
+      ttsModel: "gpt-4o-mini-tts",
+      lookup: {
+        status: "used",
+        privacyMode: "strict",
+        questionKind: "weather",
+        retrievalSource: "cache",
+        citations: [{ title: "Weather", url: "https://example.com/weather" }],
+      },
+    }),
+    failure_json: null,
+    transcript_mime_type: "retry/text",
+    audio_bytes: 0,
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/voice/retry",
+    payload: {
+      sessionId: "self-knowledge-anchored-session",
+      turnId: `self-knowledge-anchored-${randomUUID()}`,
+      transcriptText: "What data did you use for that turn?",
+      explainTurnId,
+      lookupPrivacyMode: "strict",
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  const turn = extractTurnComplete(response.body);
+
+  assert.equal(turn.provider.provider, "local_self_knowledge");
+  assert.equal(turn.provider.selfKnowledge.topic, "turn_data_usage");
+  assert.equal(turn.provider.selfKnowledge.latestTurnId, explainTurnId);
+  assert.equal(turn.provider.selfKnowledge.requestedTurnId, explainTurnId);
+  assert.match(turn.assistantText, /lookup-backed|external lookup|approved facts/i);
 });
 
 test("retry endpoint reuses cached lookup retrieval artifacts on repeated current-info questions", async () => {

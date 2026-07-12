@@ -26,6 +26,7 @@ class SummaryScheduler {
         console.error("Summary refresh failed:", error);
       });
     }, delayMs);
+    this.idleTimer?.unref?.();
   }
 
   async run() {
@@ -55,6 +56,11 @@ class SummaryScheduler {
     } finally {
       this.running = false;
     }
+  }
+
+  stop() {
+    clearTimeout(this.idleTimer);
+    this.idleTimer = null;
   }
 }
 

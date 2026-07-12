@@ -8,19 +8,24 @@ const SELF_KNOWLEDGE_SAMPLE_QUESTIONS = [
   "Why did you answer that way?",
   "Why didn't audio play?",
   "Help me debug the last failure.",
+  "What data did you use for that turn?",
+  "What was stored from that turn?",
+  "Was that model-only or lookup-backed?",
+  "Did approved facts affect that reply?",
 ];
 
-export function buildSelfKnowledgeResponse(question) {
+export function buildSelfKnowledgeResponse(question, options = {}) {
   const normalizedQuestion = normalizeQuestion(question);
   const topic = classifySelfKnowledgeTopic(normalizedQuestion);
   if (!topic) {
     return null;
   }
 
-  const latestTurn = getLatestExplainableTurn();
-  const latestTurnExplanation = latestTurn ? buildLatestTurnExplanation(latestTurn) : null;
-  const latestFailureTurn = getLatestFailureTurn();
-  const latestFailureExplanation = latestFailureTurn ? buildFailureDebugExplanation(latestFailureTurn) : null;
+  const selectedTurn = getSelectedExplainableTurn(options.explainTurnId);
+  const selectedTurnExplanation = selectedTurn ? buildLatestTurnExplanation(selectedTurn) : null;
+  const selectedTurnExplainability = selectedTurn ? buildTurnExplainability(selectedTurn) : null;
+  const selectedFailureTurn = getSelectedFailureTurn(options.explainTurnId);
+  const selectedFailureExplanation = selectedFailureTurn ? buildFailureDebugExplanation(selectedFailureTurn) : null;
   const overview = buildSelfKnowledgeOverview();
 
   switch (topic) {
@@ -44,7 +49,7 @@ export function buildSelfKnowledgeResponse(question) {
         unknowns: [
           "I cannot expose hidden model internals beyond the stored turn metadata and configured routing.",
         ],
-        latestTurnId: latestTurn?.id || null,
+        latestTurnId: selectedTurn?.id || null,
       };
     case "storage":
       return {
@@ -62,89 +67,131 @@ export function buildSelfKnowledgeResponse(question) {
         unknowns: [
           "I cannot prove what happened outside the app process, only what this code stores locally.",
         ],
-        latestTurnId: latestTurn?.id || null,
+        latestTurnId: selectedTurn?.id || null,
       };
     case "provider_path":
       return {
         topic,
-        text: latestTurnExplanation
-          ? latestTurnExplanation.providerAnswer
+        text: selectedTurnExplanation
+          ? selectedTurnExplanation.providerAnswer
           : "I do not have a previous completed turn yet, so I cannot name a provider or model path.",
         context: {
           topic,
           sampleQuestions: overview.sampleQuestions,
-          latestTurnId: latestTurn?.id || null,
-          latestTurnProvider: latestTurnExplanation?.providerPath || null,
+          latestTurnId: selectedTurn?.id || null,
+          latestTurnProvider: selectedTurnExplanation?.providerPath || null,
         },
-        evidence: latestTurnExplanation?.evidence || ["No previous completed turn is available yet."],
-        inference: latestTurnExplanation?.inference || [],
-        unknowns: latestTurnExplanation?.unknowns || [
+        evidence: selectedTurnExplanation?.evidence || ["No previous completed turn is available yet."],
+        inference: selectedTurnExplanation?.inference || [],
+        unknowns: selectedTurnExplanation?.unknowns || [
           "Without a stored turn, I cannot confirm a provider or model path.",
         ],
-        latestTurnId: latestTurn?.id || null,
+        latestTurnId: selectedTurn?.id || null,
       };
     case "recent_reply":
       return {
         topic,
-        text: latestTurnExplanation
-          ? latestTurnExplanation.explainAnswer
+        text: selectedTurnExplanation
+          ? selectedTurnExplanation.explainAnswer
           : "I do not have a previous completed turn to explain yet.",
         context: {
           topic,
           sampleQuestions: overview.sampleQuestions,
-          latestTurnId: latestTurn?.id || null,
-          latestTurnSummary: latestTurnExplanation?.summary || null,
+          latestTurnId: selectedTurn?.id || null,
+          latestTurnSummary: selectedTurnExplanation?.summary || null,
         },
-        evidence: latestTurnExplanation?.evidence || ["No previous completed turn is available yet."],
-        inference: latestTurnExplanation?.inference || [],
-        unknowns: latestTurnExplanation?.unknowns || [
+        evidence: selectedTurnExplanation?.evidence || ["No previous completed turn is available yet."],
+        inference: selectedTurnExplanation?.inference || [],
+        unknowns: selectedTurnExplanation?.unknowns || [
           "Without a stored turn, I cannot separate confirmed evidence from inference for a reply.",
         ],
-        latestTurnId: latestTurn?.id || null,
-        explainability: latestTurnExplanation
+        latestTurnId: selectedTurn?.id || null,
+        explainability: selectedTurnExplanation
           ? {
-              summary: latestTurnExplanation.summary,
-              answerMode: latestTurnExplanation.answerMode,
-              evidence: latestTurnExplanation.evidence,
-              inference: latestTurnExplanation.inference,
-              unknowns: latestTurnExplanation.unknowns,
-              nextChecks: latestTurnExplanation.nextChecks,
-              turnStatus: latestTurnExplanation.turnStatus,
-              latestTurnId: latestTurn.id,
+              summary: selectedTurnExplanation.summary,
+              answerMode: selectedTurnExplanation.answerMode,
+              evidence: selectedTurnExplanation.evidence,
+              inference: selectedTurnExplanation.inference,
+              unknowns: selectedTurnExplanation.unknowns,
+              nextChecks: selectedTurnExplanation.nextChecks,
+              turnStatus: selectedTurnExplanation.turnStatus,
+              latestTurnId: selectedTurn.id,
             }
           : null,
       };
     case "debug_help":
       return {
         topic,
-        text: latestFailureExplanation
-          ? latestFailureExplanation.debugAnswer
+        text: selectedFailureExplanation
+          ? selectedFailureExplanation.debugAnswer
           : "I do not have a recent failed or degraded turn to debug yet.",
         context: {
           topic,
           sampleQuestions: overview.sampleQuestions,
-          latestTurnId: latestFailureTurn?.id || null,
-          failureCategory: latestFailureExplanation?.failureCategory || null,
+          latestTurnId: selectedFailureTurn?.id || null,
+          failureCategory: selectedFailureExplanation?.failureCategory || null,
         },
-        evidence: latestFailureExplanation?.evidence || ["No recent failed or degraded turn is available yet."],
-        inference: latestFailureExplanation?.inference || [],
-        unknowns: latestFailureExplanation?.unknowns || [
+        evidence: selectedFailureExplanation?.evidence || ["No recent failed or degraded turn is available yet."],
+        inference: selectedFailureExplanation?.inference || [],
+        unknowns: selectedFailureExplanation?.unknowns || [
           "Without a failed or degraded stored turn, I cannot ground debugging help in local evidence.",
         ],
-        latestTurnId: latestFailureTurn?.id || null,
-        explainability: latestFailureExplanation
+        latestTurnId: selectedFailureTurn?.id || null,
+        explainability: selectedFailureExplanation
           ? {
-              summary: latestFailureExplanation.summary,
+              summary: selectedFailureExplanation.summary,
               answerMode: "debug_help",
-              evidence: latestFailureExplanation.evidence,
-              inference: latestFailureExplanation.inference,
-              unknowns: latestFailureExplanation.unknowns,
-              nextChecks: latestFailureExplanation.nextChecks,
-              turnStatus: latestFailureTurn.turn_status,
-              latestTurnId: latestFailureTurn.id,
+              evidence: selectedFailureExplanation.evidence,
+              inference: selectedFailureExplanation.inference,
+              unknowns: selectedFailureExplanation.unknowns,
+              nextChecks: selectedFailureExplanation.nextChecks,
+              turnStatus: selectedFailureTurn.turn_status,
+              latestTurnId: selectedFailureTurn.id,
             }
           : null,
       };
+    case "turn_data_usage":
+      return buildTurnSpecificSelfKnowledgeResponse({
+        topic,
+        selectedTurn,
+        selectedTurnExplanation,
+        turnExplainability: selectedTurnExplainability,
+        overview,
+        textBuilder: (explainability) => [
+          explainability.dataUsage.summary,
+          explainability.routing.approvedFactsImpact,
+          explainability.routing.lookupBacked
+            ? "This reply was lookup-backed, so retrieved current-source material was also part of what the app used."
+            : "This reply did not depend on external lookup evidence.",
+        ].join(" "),
+      });
+    case "turn_storage":
+      return buildTurnSpecificSelfKnowledgeResponse({
+        topic,
+        selectedTurn,
+        selectedTurnExplanation,
+        turnExplainability: selectedTurnExplainability,
+        overview,
+        textBuilder: (explainability) => [
+          explainability.storedArtifacts.summary,
+          `Stored fields for that turn included ${explainability.storedArtifacts.storedFields.join(", ")}.`,
+        ].join(" "),
+      });
+    case "turn_routing":
+      return buildTurnSpecificSelfKnowledgeResponse({
+        topic,
+        selectedTurn,
+        selectedTurnExplanation,
+        turnExplainability: selectedTurnExplainability,
+        overview,
+        textBuilder: (explainability) => [
+          explainability.routing.summary,
+          explainability.routing.approvedFactsImpact,
+          explainability.routing.lookupBacked
+            ? "The stored lookup metadata shows that retrieval contributed to the answer path."
+            : "The stored lookup metadata does not show a lookup-backed answer path.",
+        ].join(" "),
+      });
     default:
       return null;
   }
@@ -171,6 +218,46 @@ export function buildSelfKnowledgeDebugState() {
           ...latestFailureExplanation,
         }
       : null,
+  };
+}
+
+export function buildTurnExplainability(turn) {
+  if (!turn) {
+    return null;
+  }
+
+  const latestTurnExplanation = buildLatestTurnExplanation(turn);
+  const dataUsage = buildTurnDataUsage(turn);
+  const storedArtifacts = buildStoredArtifactsSummary(turn);
+  const routing = buildTurnRoutingSummary(turn);
+  const failureExplanation =
+    turn.turn_status !== "completed" || turn.failure_json
+      ? buildFailureDebugExplanation(turn)
+      : null;
+
+  return {
+    summary: latestTurnExplanation.summary,
+    answerMode: latestTurnExplanation.answerMode,
+    turnStatus: latestTurnExplanation.turnStatus,
+    evidence: latestTurnExplanation.evidence,
+    inference: latestTurnExplanation.inference,
+    unknowns: latestTurnExplanation.unknowns,
+    nextChecks: latestTurnExplanation.nextChecks,
+    providerPath: latestTurnExplanation.providerPath,
+    dataUsage,
+    storedArtifacts,
+    routing,
+    failure:
+      failureExplanation
+        ? {
+            summary: failureExplanation.summary,
+            failureCategory: failureExplanation.failureCategory,
+            evidence: failureExplanation.evidence,
+            inference: failureExplanation.inference,
+            unknowns: failureExplanation.unknowns,
+            nextChecks: failureExplanation.nextChecks,
+          }
+        : null,
   };
 }
 
@@ -252,6 +339,30 @@ function classifySelfKnowledgeTopic(question) {
     return "debug_help";
   }
 
+  if (
+    /\b(what data did you use for that turn|what data did you use for this turn|what context did you use for that turn|what context did you use for this turn|did approved facts affect that reply|did approved facts affect this reply)\b/.test(
+      question
+    )
+  ) {
+    return "turn_data_usage";
+  }
+
+  if (
+    /\b(what was stored from that turn|what was stored from this turn|what did you store from that turn|what did you store from this turn)\b/.test(
+      question
+    )
+  ) {
+    return "turn_storage";
+  }
+
+  if (
+    /\b(was that model only or lookup backed|was this model only or lookup backed|was that model-only or lookup-backed|was this model-only or lookup-backed|was that reply model only or lookup backed|was that reply model-only or lookup-backed)\b/.test(
+      question
+    )
+  ) {
+    return "turn_routing";
+  }
+
   return null;
 }
 
@@ -271,6 +382,51 @@ function buildStorageAnswer(overview) {
     overview.storageFacts[2],
     "This app is local-first today, so the durable records live on this machine rather than in a shared cloud account.",
   ].join(" ");
+}
+
+function buildTurnSpecificSelfKnowledgeResponse({
+  topic,
+  selectedTurn,
+  selectedTurnExplanation,
+  turnExplainability,
+  overview,
+  textBuilder,
+}) {
+  if (!selectedTurn || !turnExplainability) {
+    return {
+      topic,
+      text: "I do not have a previous completed turn to answer that from yet.",
+      context: {
+        topic,
+        sampleQuestions: overview.sampleQuestions,
+        latestTurnId: null,
+      },
+      evidence: ["No previous completed turn is available yet."],
+      inference: [],
+      unknowns: ["Without a stored turn, I cannot ground that answer in local evidence."],
+      latestTurnId: null,
+      explainability: null,
+    };
+  }
+
+  return {
+    topic,
+    text: textBuilder(turnExplainability),
+    context: {
+      topic,
+      sampleQuestions: overview.sampleQuestions,
+      latestTurnId: selectedTurn.id,
+      latestTurnSummary: selectedTurnExplanation?.summary || turnExplainability.summary,
+    },
+    evidence: turnExplainability.evidence,
+    inference: turnExplainability.inference,
+    unknowns: turnExplainability.unknowns,
+    latestTurnId: selectedTurn.id,
+    explainability: {
+      ...turnExplainability,
+      latestTurnId: selectedTurn.id,
+    },
+  };
 }
 
 function buildLatestTurnExplanation(turn) {
@@ -333,6 +489,119 @@ function buildLatestTurnExplanation(turn) {
   };
 }
 
+function buildTurnDataUsage(turn) {
+  const contextInfo = turn.context_json || {};
+  const providerInfo = turn.provider_json || {};
+  const lookupInfo = providerInfo.lookup || null;
+  const approvedFactCount = Array.isArray(contextInfo.approvedFacts) ? contextInfo.approvedFacts.length : 0;
+  const recentTurnCount = Array.isArray(contextInfo.recentTurns) ? contextInfo.recentTurns.length : 0;
+  const hasSummary = Boolean(String(contextInfo.rollingSummary || "").trim());
+  const citationsCount = Array.isArray(lookupInfo?.citations) ? lookupInfo.citations.length : 0;
+
+  const evidence = [
+    `The stored current user text was "${String(contextInfo.currentUserText || turn.transcript_text || "").trim() || "(empty)"}".`,
+    `The context package included ${recentTurnCount} recent turn ${recentTurnCount === 1 ? "snippet" : "snippets"}, ${approvedFactCount} approved ${approvedFactCount === 1 ? "fact" : "facts"}, and ${hasSummary ? "a rolling summary" : "no rolling summary"}.`,
+    lookupInfo?.status === "used"
+      ? `Lookup supplied ${citationsCount} cited ${citationsCount === 1 ? "source" : "sources"} and used ${lookupInfo.retrievalSource === "cache" ? "cached retrieval artifacts" : "fresh retrieval"}.`
+      : "No external lookup sources were attached to this turn.",
+  ];
+
+  const summary =
+    approvedFactCount || recentTurnCount || hasSummary || lookupInfo?.status === "used"
+      ? "This turn used the current utterance plus some stored or retrieved context."
+      : "This turn appears to have relied mostly on the current utterance and provider defaults.";
+
+  return {
+    summary,
+    approvedFactCount,
+    recentTurnCount,
+    usedRollingSummary: hasSummary,
+    lookupUsed: lookupInfo?.status === "used",
+    retrievalSource: lookupInfo?.retrievalSource || null,
+    evidence,
+  };
+}
+
+function buildStoredArtifactsSummary(turn) {
+  const providerInfo = turn.provider_json || {};
+  const failureInfo = turn.failure_json || null;
+  const storedFields = [
+    "transcript_text",
+    "assistant_text",
+    "context_json",
+    "latency_json",
+    "token_json",
+    "provider_json",
+  ];
+
+  if (failureInfo) {
+    storedFields.push("failure_json");
+  }
+
+  if (turn.transcript_mime_type) {
+    storedFields.push("transcript_mime_type");
+  }
+
+  if (typeof turn.audio_bytes === "number") {
+    storedFields.push("audio_bytes");
+  }
+
+  const evidence = [
+    `Transcript text ${turn.transcript_text ? "was" : "was not"} stored for this turn.`,
+    `Assistant text ${turn.assistant_text ? "was" : "was not"} stored for this turn.`,
+    `Provider metadata ${providerInfo ? "was" : "was not"} stored for this turn.`,
+    failureInfo
+      ? "A failure record was stored for this turn."
+      : "No failure record was stored for this turn.",
+  ];
+
+  return {
+    summary: "The app stores the transcript, reply, context/debug metadata, and optional failure details for this turn locally.",
+    storedFields,
+    transcriptMimeType: turn.transcript_mime_type || "",
+    audioBytes: typeof turn.audio_bytes === "number" ? turn.audio_bytes : null,
+    evidence,
+  };
+}
+
+function buildTurnRoutingSummary(turn) {
+  const providerInfo = turn.provider_json || {};
+  const lookupInfo = providerInfo.lookup || null;
+  const contextInfo = turn.context_json || {};
+  const approvedFactCount = Array.isArray(contextInfo.approvedFacts) ? contextInfo.approvedFacts.length : 0;
+  const answerMode = determineExplainabilityAnswerMode(providerInfo, turn.failure_json || null);
+  const lookupBacked = lookupInfo?.status === "used";
+  const modelOnly = lookupInfo?.status === "not_needed" || !lookupInfo;
+  const selfKnowledge = providerInfo?.selfKnowledge?.status === "used";
+
+  let approvedFactsImpact = "No approved facts were packaged for this turn.";
+  if (approvedFactCount > 0) {
+    approvedFactsImpact =
+      "Approved facts were available in the context package, but the app cannot prove exactly which wording came from them.";
+  }
+
+  return {
+    summary: selfKnowledge
+      ? "This turn was answered by the local self-knowledge path."
+      : lookupBacked
+        ? "This turn was lookup-backed rather than model-only."
+        : modelOnly
+          ? "This turn was model-only with no external lookup needed."
+          : `This turn used routing mode ${answerMode}.`,
+    answerMode,
+    lookupStatus: lookupInfo?.status || "none",
+    lookupBacked,
+    modelOnly,
+    selfKnowledge,
+    approvedFactsImpact,
+    evidence: [
+      `Provider path: ${describeProviderPath(providerInfo)}.`,
+      `Lookup status: ${lookupInfo?.status || "none"}.`,
+      approvedFactsImpact,
+    ],
+  };
+}
+
 function buildFailureDebugExplanation(turn) {
   const failureInfo = turn.failure_json || {};
   const providerInfo = turn.provider_json || {};
@@ -377,9 +646,31 @@ function getLatestExplainableTurn() {
   return turns.length ? turns[turns.length - 1] : null;
 }
 
+function getSelectedExplainableTurn(turnId) {
+  if (turnId) {
+    const turn = store.getTurnById(turnId);
+    if (turn) {
+      return turn;
+    }
+  }
+
+  return getLatestExplainableTurn();
+}
+
 function getLatestFailureTurn() {
   const turns = store.getDebugTurns(20);
   return turns.find((turn) => turn.turn_status !== "completed" || turn.failure_json) || null;
+}
+
+function getSelectedFailureTurn(turnId) {
+  if (turnId) {
+    const turn = store.getTurnById(turnId);
+    if (turn && (turn.turn_status !== "completed" || turn.failure_json)) {
+      return turn;
+    }
+  }
+
+  return getLatestFailureTurn();
 }
 
 function describeProviderPath(providerInfo) {

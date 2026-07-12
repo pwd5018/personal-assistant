@@ -1758,7 +1758,15 @@ function buildLookupAnswerFallback({
     };
   }
 
-  const sanitizedCompactedText = looksLikeNoisyLookupSummary(compactedText) ? "" : compactedText;
+  const canReuseGenericCompactedText =
+    answerStatus !== "uncertain" &&
+    answerExtractability !== "insufficient" &&
+    answerExtractability !== "off_topic" &&
+    resultTopicMatch !== "low" &&
+    evidence?.evidenceStatus !== "missing" &&
+    evidence?.evidenceStatus !== "mismatched";
+  const sanitizedCompactedText =
+    canReuseGenericCompactedText && !looksLikeNoisyLookupSummary(compactedText) ? compactedText : "";
   const displayAnswer =
     answerStatus === "uncertain"
       ? sanitizedCompactedText || "I couldn't find a reliable current answer from the sources I found."
