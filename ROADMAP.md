@@ -256,7 +256,8 @@ Exit criteria:
 
 Status:
 
-- Not started
+- Done
+- Validated through local self-knowledge answers, evidence-vs-inference boundaries, selected-turn explainability, failure-debug guidance, live `/api/voice/retry` anchoring, browser history actions, 43 backend tests, and a production frontend build
 
 ## Milestone 11: Configurable AI Providers and Model Routing
 

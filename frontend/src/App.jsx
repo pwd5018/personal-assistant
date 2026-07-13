@@ -518,6 +518,40 @@ export default function App() {
     await submitRetryTurn(transcriptToRetry, turnId);
   }
 
+  async function handleTextPromptTurn(transcriptText, source = "self_knowledge_action") {
+    const trimmedTranscript = String(transcriptText || "").trim();
+    if (!trimmedTranscript) {
+      return;
+    }
+
+    await interruptTurn(source);
+    clearPlaybackPayload();
+
+    const turnId = crypto.randomUUID();
+    currentTurnIdRef.current = turnId;
+    activeTurnSourceRef.current = source;
+
+    dispatch({
+      type: "RESET_FOR_NEW_TURN",
+      turnId,
+      clientTimeline: {
+        promptTriggeredAt: new Date().toISOString(),
+      },
+    });
+    dispatch({
+      type: "TRANSCRIPT_READY",
+      turnId,
+      text: trimmedTranscript,
+    });
+    dispatch({
+      type: "TURN_PHASE",
+      turnId,
+      phase: "thinking",
+    });
+
+    await submitRetryTurn(trimmedTranscript, turnId);
+  }
+
   async function submitVoiceTurn(blob, turnId) {
     const formData = new FormData();
     formData.append("sessionId", SESSION_ID);
@@ -1648,6 +1682,10 @@ export default function App() {
                       <strong>{describeLiveLookup(voiceState)}</strong>
                     </div>
                     <div className="lifecycle-row">
+                      <span>Explain target</span>
+                      <strong>{describeExplainTarget(selectedExplainTurn)}</strong>
+                    </div>
+                    <div className="lifecycle-row">
                       <span>Cancellation</span>
                       <strong>{voiceState.cancellationReason || "None"}</strong>
                     </div>
@@ -1688,7 +1726,7 @@ export default function App() {
                       <p className="card-subtitle">What the backend is packaging for the active turn.</p>
                     </div>
                   </div>
-                  <pre>{formatDebugJson(voiceState.contextPreview, "No live turn yet.")}</pre>
+                  <pre>{formatDebugJson(buildContextPreviewForDisplay(voiceState.contextPreview, selectedExplainTurn), "No live turn yet.")}</pre>
                 </div>
                 <div className="debug-card live-context">
                   <div className="card-header">
@@ -1700,6 +1738,7 @@ export default function App() {
                   <pre>{formatDebugJson({
                     phase: voiceState.phase,
                     source: activeTurnSourceRef.current,
+                    explainTarget: buildExplainTargetDebugPayload(selectedExplainTurn),
                     provider: voiceState.provider,
                     cancellationReason: voiceState.cancellationReason,
                     playback: voiceState.playback,
@@ -1748,6 +1787,41 @@ export default function App() {
                         {selectedExplainTurnId === turn.id ? "Clear explain target" : "Use as explain target"}
                       </button>
                     </p>
+                    {selectedExplainTurnId === turn.id ? (
+                      <div className="controls">
+                        <button
+                          className="secondary"
+                          onClick={() => handleTextPromptTurn("Why did you answer that way?", "selected_turn_reply_explain")}
+                        >
+                          Explain reply
+                        </button>
+                        <button
+                          className="secondary"
+                          onClick={() => handleTextPromptTurn("What data did you use for that turn?", "selected_turn_data_usage")}
+                        >
+                          Data used
+                        </button>
+                        <button
+                          className="secondary"
+                          onClick={() => handleTextPromptTurn("What was stored from that turn?", "selected_turn_storage")}
+                        >
+                          What was stored
+                        </button>
+                        <button
+                          className="secondary"
+                          onClick={() => handleTextPromptTurn("Was that model-only or lookup-backed?", "selected_turn_routing")}
+                        >
+                          Routing
+                        </button>
+                        <button
+                          className="secondary"
+                          onClick={() => handleTextPromptTurn("Why didn't audio play?", "selected_turn_debug_help")}
+                          disabled={!canAskFailureQuestion(turn)}
+                        >
+                          Why audio failed
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                   <details>
                     <summary>Technical details</summary>
@@ -2304,6 +2378,14 @@ function describeAssistantAnswerMode(voiceState) {
   return "Model-only answer";
 }
 
+function describeExplainTarget(turn) {
+  if (!turn) {
+    return "Latest-turn fallback";
+  }
+
+  return `Selected turn ${formatTurnSource(turn.id)}`;
+}
+
 function describeSelfKnowledgeTurnReference(selfKnowledge, options = {}) {
   const requestedTurnId = selfKnowledge?.requestedTurnId;
   const latestTurnId = selfKnowledge?.latestTurnId;
@@ -2322,6 +2404,39 @@ function describeSelfKnowledgeTurnReference(selfKnowledge, options = {}) {
   }
 
   return "";
+}
+
+function buildExplainTargetDebugPayload(turn) {
+  if (!turn) {
+    return {
+      mode: "latest_turn_fallback",
+      turnId: null,
+    };
+  }
+
+  return {
+    mode: "selected_turn",
+    turnId: turn.id,
+    createdAt: turn.created_at,
+    turnStatus: turn.turn_status,
+    transcriptText: turn.transcript_text || "",
+  };
+}
+
+function buildContextPreviewForDisplay(contextPreview, selectedTurn) {
+  if (!contextPreview && !selectedTurn) {
+    return null;
+  }
+
+  return {
+    explainTarget: buildExplainTargetDebugPayload(selectedTurn),
+    ...(contextPreview || {}),
+  };
+}
+
+function canAskFailureQuestion(turn) {
+  const failure = parseStoredJson(turn.failure_json);
+  return Boolean(failure?.stage) || turn.turn_status !== "completed";
 }
 
 function lookupStatusPillClass(status) {

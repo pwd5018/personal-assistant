@@ -17,7 +17,7 @@ import {
   isLookupCacheEntryExpired,
 } from "./lookupCache.js";
 import { memoryScheduler } from "./memoryScheduler.js";
-import { provider } from "./provider/index.js";
+import { getProviderCatalog, provider } from "./provider/index.js";
 import {
   buildSelfKnowledgeDebugState,
   buildSelfKnowledgeResponse,
@@ -46,6 +46,7 @@ app.addHook("onClose", async () => {
 app.get("/api/health", async () => ({
   ok: true,
   providerConfigured: provider.isConfigured(),
+  providerCatalog: getProviderCatalog(),
 }));
 
 app.post("/api/voice/cancel", async (request, reply) => {

@@ -14,6 +14,9 @@ const MIN_MEMORY_CONFIDENCE = 0.7;
 const ALLOWED_MEMORY_RECOMMENDATIONS = new Set(["approve", "dismiss", "reject"]);
 
 export class OpenAiProvider {
+  id = "openai";
+  label = "OpenAI";
+
   constructor() {
     this.client = config.openAiApiKey
       ? new OpenAI({ apiKey: config.openAiApiKey })
@@ -22,6 +25,32 @@ export class OpenAiProvider {
 
   isConfigured() {
     return Boolean(this.client);
+  }
+
+  getDescriptor() {
+    return {
+      id: this.id,
+      label: this.label,
+      configured: this.isConfigured(),
+      capabilities: [
+        "chat",
+        "transcription",
+        "speech_synthesis",
+        "summary",
+        "lookup_decision",
+        "lookup_composition",
+        "fact_extraction",
+      ],
+      models: {
+        chat: config.chatModel,
+        transcription: config.sttModel,
+        speech_synthesis: config.ttsModel,
+        summary: config.summaryModel,
+        lookup_decision: config.externalLookupDecisionModel,
+        lookup_composition: config.externalLookupCompositionModel,
+        fact_extraction: config.factExtractionModel,
+      },
+    };
   }
 
   assertConfigured() {

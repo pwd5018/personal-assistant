@@ -27,6 +27,7 @@ export function buildSelfKnowledgeResponse(question, options = {}) {
   const selectedFailureTurn = getSelectedFailureTurn(options.explainTurnId);
   const selectedFailureExplanation = selectedFailureTurn ? buildFailureDebugExplanation(selectedFailureTurn) : null;
   const overview = buildSelfKnowledgeOverview();
+  const selectedTurnLabel = describeRequestedTurnLabel(options.explainTurnId, selectedTurn?.id);
 
   switch (topic) {
     case "architecture":
@@ -73,7 +74,7 @@ export function buildSelfKnowledgeResponse(question, options = {}) {
       return {
         topic,
         text: selectedTurnExplanation
-          ? selectedTurnExplanation.providerAnswer
+          ? `${selectedTurnLabel}${selectedTurnExplanation.providerAnswer}`
           : "I do not have a previous completed turn yet, so I cannot name a provider or model path.",
         context: {
           topic,
@@ -92,7 +93,7 @@ export function buildSelfKnowledgeResponse(question, options = {}) {
       return {
         topic,
         text: selectedTurnExplanation
-          ? selectedTurnExplanation.explainAnswer
+          ? `${selectedTurnLabel}${selectedTurnExplanation.explainAnswer}`
           : "I do not have a previous completed turn to explain yet.",
         context: {
           topic,
@@ -123,7 +124,7 @@ export function buildSelfKnowledgeResponse(question, options = {}) {
       return {
         topic,
         text: selectedFailureExplanation
-          ? selectedFailureExplanation.debugAnswer
+          ? `${selectedTurnLabel}${selectedFailureExplanation.debugAnswer}`
           : "I do not have a recent failed or degraded turn to debug yet.",
         context: {
           topic,
@@ -157,7 +158,9 @@ export function buildSelfKnowledgeResponse(question, options = {}) {
         selectedTurnExplanation,
         turnExplainability: selectedTurnExplainability,
         overview,
-        textBuilder: (explainability) => [
+        selectedTurnLabel,
+        textBuilder: (explainability, turnLabel) => [
+          turnLabel,
           explainability.dataUsage.summary,
           explainability.routing.approvedFactsImpact,
           explainability.routing.lookupBacked
@@ -172,7 +175,9 @@ export function buildSelfKnowledgeResponse(question, options = {}) {
         selectedTurnExplanation,
         turnExplainability: selectedTurnExplainability,
         overview,
-        textBuilder: (explainability) => [
+        selectedTurnLabel,
+        textBuilder: (explainability, turnLabel) => [
+          turnLabel,
           explainability.storedArtifacts.summary,
           `Stored fields for that turn included ${explainability.storedArtifacts.storedFields.join(", ")}.`,
         ].join(" "),
@@ -184,7 +189,9 @@ export function buildSelfKnowledgeResponse(question, options = {}) {
         selectedTurnExplanation,
         turnExplainability: selectedTurnExplainability,
         overview,
-        textBuilder: (explainability) => [
+        selectedTurnLabel,
+        textBuilder: (explainability, turnLabel) => [
+          turnLabel,
           explainability.routing.summary,
           explainability.routing.approvedFactsImpact,
           explainability.routing.lookupBacked
@@ -390,6 +397,7 @@ function buildTurnSpecificSelfKnowledgeResponse({
   selectedTurnExplanation,
   turnExplainability,
   overview,
+  selectedTurnLabel,
   textBuilder,
 }) {
   if (!selectedTurn || !turnExplainability) {
@@ -411,7 +419,7 @@ function buildTurnSpecificSelfKnowledgeResponse({
 
   return {
     topic,
-    text: textBuilder(turnExplainability),
+    text: textBuilder(turnExplainability, selectedTurnLabel),
     context: {
       topic,
       sampleQuestions: overview.sampleQuestions,
@@ -427,6 +435,14 @@ function buildTurnSpecificSelfKnowledgeResponse({
       latestTurnId: selectedTurn.id,
     },
   };
+}
+
+function describeRequestedTurnLabel(requestedTurnId, resolvedTurnId) {
+  if (requestedTurnId && resolvedTurnId && requestedTurnId === resolvedTurnId) {
+    return `For the selected turn ${summarizeTurnReference(resolvedTurnId)}: `;
+  }
+
+  return "";
 }
 
 function buildLatestTurnExplanation(turn) {

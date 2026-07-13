@@ -191,5 +191,6 @@ test("turn-specific self-knowledge response honors explicit explain turn selecti
   assert.equal(response.latestTurnId, turnId);
   assert.equal(response.explainability.latestTurnId, turnId);
   assert.equal(response.explainability.dataUsage.lookupUsed, true);
+  assert.match(response.text, /For the selected turn/i);
   assert.match(response.text, /lookup-backed|external lookup|approved facts/i);
 });
