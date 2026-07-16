@@ -19,7 +19,19 @@ export class GroqProvider {
         transcription: config.groqSttModel,
         speech_synthesis: config.groqTtsModel,
       },
-      voices: { speech_synthesis: ["autumn"] },
+      voices: {
+        speech_synthesis: {
+          "canopylabs/orpheus-v1-english": ["autumn", "diana", "hannah", "austin", "daniel", "troy"],
+          "canopylabs/orpheus-arabic-saudi": ["abdullah", "fahad", "sultan", "lulwa", "noura", "aisha"],
+        },
+      },
+      voiceMetadata: {
+        speech_synthesis: {
+          sourceUrl: "https://console.groq.com/docs/text-to-speech/orpheus",
+          catalogType: "documented",
+          dynamic: false,
+        },
+      },
     };
   }
 

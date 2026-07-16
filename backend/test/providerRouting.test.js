@@ -20,8 +20,10 @@ test("the initial routing catalog exposes all logical routes", () => {
   assert.ok(catalog.routes.chat);
   assert.ok(catalog.routes["voice.stt"]);
   assert.ok(catalog.routes["voice.tts"]);
-  assert.deepEqual(catalog.providers.find((item) => item.id === "openai").voices.speech_synthesis.includes("alloy"), true);
-  assert.deepEqual(catalog.providers.find((item) => item.id === "gemini").voices.speech_synthesis.includes("Kore"), true);
+  assert.deepEqual(catalog.providers.find((item) => item.id === "openai").voices.speech_synthesis["*"].includes("alloy"), true);
+  const geminiVoiceCatalog = catalog.providers.find((item) => item.id === "gemini").voices.speech_synthesis;
+  assert.ok(Object.values(geminiVoiceCatalog).some((voices) => voices.length === 30));
+  assert.deepEqual(catalog.providers.find((item) => item.id === "groq").voices.speech_synthesis["canopylabs/orpheus-v1-english"].includes("troy"), true);
 });
 
 test("the persisted provider selection resolves for every route", () => {

@@ -54,9 +54,9 @@ export function getRoutingSelections() {
               provider: saved.provider_id,
               capability: selection.capability,
               model: saved.model,
-              voice: isValidVoice(route, saved.provider_id, saved.voice)
+              voice: isValidVoice(route, saved.provider_id, saved.voice, saved.model)
                 ? saved.voice
-                : getDefaultVoice(saved.provider_id) || selection.voice || null,
+                : getDefaultVoice(saved.provider_id, saved.model) || selection.voice || null,
               updatedAt: saved.updated_at,
             }
         : selection,
@@ -88,11 +88,11 @@ export function validateProviderSettings(input) {
       throw new Error(`Provider ${providerId} does not support route ${route}.`);
     }
 
-    if (voice && !isValidVoice(route, providerId, voice)) {
+    if (voice && !isValidVoice(route, providerId, voice, model)) {
       throw new Error(`Voice ${voice} is not supported for route ${route}.`);
     }
 
-    normalized.push({ route, providerId, model, voice: voice || getDefaultVoice(providerId) || null });
+    normalized.push({ route, providerId, model, voice: voice || getDefaultVoice(providerId, model) || null });
   }
 
   return normalized;
@@ -127,17 +127,23 @@ export function resolveProviderRoute(route) {
   };
 }
 
-function isValidVoice(route, providerId, voice) {
+function isValidVoice(route, providerId, voice, model) {
   if (route !== "voice.tts" || !voice) return false;
-  const voices = providerRegistry.get(providerId)?.getDescriptor().voices?.speech_synthesis || [];
+  const voices = getProviderVoices(providerId, model);
   return voices.includes(voice);
 }
 
-function getDefaultVoice(providerId) {
+function getProviderVoices(providerId, model) {
+  const catalog = providerRegistry.get(providerId)?.getDescriptor().voices?.speech_synthesis || [];
+  if (Array.isArray(catalog)) return catalog;
+  return catalog[model] || catalog["*"] || [];
+}
+
+function getDefaultVoice(providerId, model) {
   if (providerId === "openai") return config.ttsVoice;
   if (providerId === "gemini") return config.geminiTtsVoice;
-  if (providerId === "groq") return "autumn";
-  return providerRegistry.get(providerId)?.getDescriptor().voices?.speech_synthesis?.[0] || null;
+  if (providerId === "groq") return model === "canopylabs/orpheus-arabic-saudi" ? "fahad" : "autumn";
+  return getProviderVoices(providerId, model)[0] || null;
 }
 
 function isValidSelection(route, providerId, model) {

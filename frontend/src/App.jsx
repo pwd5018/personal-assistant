@@ -376,7 +376,7 @@ export default function App() {
         compatibleModels[0]?.id ||
         modelCatalogProvider?.models?.find((model) => model.capabilities?.includes(routeSetting.capability))?.id ||
         "";
-      const voices = providerDescriptor?.voices?.speech_synthesis || [];
+      const voices = getProviderVoices(providerDescriptor, nextSelection.model);
       if (route === "voice.tts") {
         nextSelection.voice = voices[0] || "";
       }
@@ -1452,7 +1452,7 @@ export default function App() {
                     const availableModels = (catalogProvider?.models || []).filter((model) =>
                       model.capabilities?.includes(routeSetting?.capability)
                     );
-                    const availableVoices = selectedProvider?.voices?.speech_synthesis || [];
+                    const availableVoices = getProviderVoices(selectedProvider, current.model);
                     const selectedVoice = availableVoices.includes(current.voice)
                       ? current.voice
                       : availableVoices[0] || "";
@@ -2459,6 +2459,12 @@ function getConfiguredProviderSummary(providerCatalog) {
   const providers = providerCatalog?.providers || [];
   const configuredCount = providers.filter((item) => item.configured).length;
   return providers.length ? `${configuredCount} of ${providers.length} configured` : "Unavailable";
+}
+
+function getProviderVoices(providerDescriptor, model) {
+  const catalog = providerDescriptor?.voices?.speech_synthesis || [];
+  if (Array.isArray(catalog)) return catalog;
+  return catalog[model] || catalog["*"] || [];
 }
 
 function formatProviderRouteLabel(route) {

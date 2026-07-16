@@ -53,7 +53,16 @@ export class OpenAiProvider {
         fact_extraction: config.factExtractionModel,
       },
       voices: {
-        speech_synthesis: ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"],
+        speech_synthesis: {
+          "*": ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"],
+        },
+      },
+      voiceMetadata: {
+        speech_synthesis: {
+          sourceUrl: "https://platform.openai.com/docs/api-reference/audio/speech-audio-done-event",
+          catalogType: "documented",
+          dynamic: false,
+        },
       },
     };
   }

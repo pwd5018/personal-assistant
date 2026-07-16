@@ -27,6 +27,7 @@ export function buildProviderDescriptor({
   capabilities,
   models,
   voices,
+  voiceMetadata,
 }) {
   return {
     id,
@@ -37,8 +38,14 @@ export function buildProviderDescriptor({
       Object.entries(models || {}).map(([capability, model]) => [capability, String(model || "")])
     ),
     voices: Object.fromEntries(
-      Object.entries(voices || {}).map(([capability, values]) => [capability, [...values]])
+      Object.entries(voices || {}).map(([capability, values]) => [
+        capability,
+        Array.isArray(values)
+          ? [...values]
+          : Object.fromEntries(Object.entries(values).map(([model, items]) => [model, [...items]])),
+      ])
     ),
+    voiceMetadata: structuredClone(voiceMetadata || {}),
   };
 }
 
@@ -51,9 +58,8 @@ export function buildRoutingCatalog({ providers, routes }) {
       ...provider,
       capabilities: [...provider.capabilities],
       models: { ...provider.models },
-      voices: Object.fromEntries(
-        Object.entries(provider.voices || {}).map(([capability, values]) => [capability, [...values]])
-      ),
+      voices: structuredClone(provider.voices || {}),
+      voiceMetadata: structuredClone(provider.voiceMetadata || {}),
     })),
   };
 }

@@ -272,6 +272,7 @@ Deliver:
 - Configurable model selection for the lighter-weight summary path as a secondary setting, even if provider-splitting there is lower priority than chat and voice
 - A backend provider abstraction that can cleanly support multiple AI vendors for chat, speech-to-text, text-to-speech, lookup decisioning, and related model calls
 - Initial additional provider support for Gemini and Groq alongside the existing OpenAI path
+- Provider/model-specific voice catalogs with documented source metadata and safe fallback behavior when providers do not expose voice discovery APIs
 - Clear validation and fallback behavior when a selected provider does not support a required capability for that path
 - Debug visibility showing which provider and model handled each part of a turn
 - Safe persistence for provider/model preferences so the current selection survives reloads
@@ -288,8 +289,9 @@ Exit criteria:
 
 Status:
 
-- Planned
-- Intentionally queued as the next capability phase after the current lookup/caching work is finished
+- Done
+
+Validated through browser-configurable provider/model/voice routing, persisted selections, independent chat and voice providers, dynamic model inventory discovery, provider/model-specific voice catalogs, invalid-combination validation, stored routing snapshots, full backend regression coverage, and production frontend/backend builds
 
 ## Working Assumptions
 
