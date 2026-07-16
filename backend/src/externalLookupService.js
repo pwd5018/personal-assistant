@@ -13,12 +13,12 @@ const BALANCED_LOOKUP_ALLOWED_FACT_CATEGORIES = new Set([
 ]);
 const MIN_RESOLUTION_CONFIDENCE = 0.65;
 
-export async function buildExternalLookupPlan(question, contextPackage, privacyModeOverride = null) {
+export async function buildExternalLookupPlan(question, contextPackage, privacyModeOverride = null, routing = null) {
   const resolvedPrivacyMode =
     privacyModeOverride === "balanced" || privacyModeOverride === "strict"
       ? privacyModeOverride
       : config.externalLookupPrivacyMode;
-  const lookupDecision = await decideExternalLookupNeed(question, contextPackage);
+  const lookupDecision = await decideExternalLookupNeed(question, contextPackage, routing);
   const preview = buildSafeLookupQuery(question, resolvedPrivacyMode, lookupDecision);
   const enabled = config.externalLookupEnabled;
   const providerReady = provider.isConfigured();
@@ -29,6 +29,7 @@ export async function buildExternalLookupPlan(question, contextPackage, privacyM
     contextPackage,
     lookupContext: contextDetails.lookupContext,
     lookupDecision,
+    routing,
   });
   const shouldLookup =
     enabled &&
@@ -75,27 +76,30 @@ export async function buildExternalLookupPlan(question, contextPackage, privacyM
   };
 }
 
-export async function performExternalLookup({ question, lookupPlan, signal }) {
+export async function performExternalLookup({ question, lookupPlan, signal, routing }) {
   return provider.answerWithExternalLookup({
     question,
     lookupPlan,
     signal,
+    model: routing?.["lookup.retrieval"]?.model,
   });
 }
 
-export async function performExternalLookupRetrieval({ question, lookupPlan, signal }) {
+export async function performExternalLookupRetrieval({ question, lookupPlan, signal, routing }) {
   return provider.fetchExternalLookupArtifacts({
     question,
     lookupPlan,
     signal,
+    model: routing?.["lookup.retrieval"]?.model,
   });
 }
 
-export async function composeExternalLookupResult({ question, lookupPlan, artifacts }) {
+export async function composeExternalLookupResult({ question, lookupPlan, artifacts, routing }) {
   return provider.composeExternalLookupResult({
     question,
     lookupPlan,
     ...artifacts,
+    model: routing?.["lookup.composition"]?.model,
   });
 }
 
@@ -161,7 +165,7 @@ function filterAllowedApprovedFacts(approvedFacts) {
   return approvedFacts.filter((fact) => BALANCED_LOOKUP_ALLOWED_FACT_CATEGORIES.has(fact?.category || ""));
 }
 
-async function decideExternalLookupNeed(question, contextPackage) {
+async function decideExternalLookupNeed(question, contextPackage, routing) {
   const fallbackDecision = fallbackExternalLookupDecision(question);
   if (!String(question || "").trim()) {
     return fallbackDecision;
@@ -175,6 +179,7 @@ async function decideExternalLookupNeed(question, contextPackage) {
     const modelDecision = await provider.classifyExternalLookupNeed({
       question,
       recentTurns: (contextPackage?.recentTurns || []).slice(-2),
+      model: routing?.["lookup.decision"]?.model,
     });
     const normalizedModelDecision = normalizeLookupDecision(
       {
@@ -217,6 +222,7 @@ async function buildLookupQueryDetails({
   contextPackage,
   lookupContext,
   lookupDecision,
+  routing,
 }) {
   const baseQuery = String(safeQuery || "").trim();
   if (!baseQuery) {
@@ -233,6 +239,7 @@ async function buildLookupQueryDetails({
     contextPackage,
     lookupContext,
     lookupDecision,
+    routing,
   });
   if (!locationHint) {
     return {
@@ -297,6 +304,7 @@ async function resolveLocationHint({
   contextPackage,
   lookupContext,
   lookupDecision,
+  routing,
 }) {
   const normalizedQuestion = String(originalQuestion || "").trim();
   if (!normalizedQuestion) {
@@ -335,6 +343,7 @@ async function resolveLocationHint({
       question: normalizedQuestion,
       questionKind: lookupDecision?.questionKind || "other",
       candidates: uniqueCandidates,
+      model: routing?.["lookup.decision"]?.model,
     });
     return selectResolvedLocation(modelMatch, uniqueCandidates) || heuristicMatch || defaultMatch;
   } catch {

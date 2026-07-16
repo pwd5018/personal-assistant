@@ -17,7 +17,14 @@ import {
   isLookupCacheEntryExpired,
 } from "./lookupCache.js";
 import { memoryScheduler } from "./memoryScheduler.js";
-import { getProviderCatalog, provider } from "./provider/index.js";
+import { buildModelCatalog } from "./modelCatalogService.js";
+import {
+  getProviderCatalog,
+  getRoutingSelections,
+  provider,
+  resolveProviderRoute,
+  saveProviderSettings,
+} from "./provider/index.js";
 import {
   buildSelfKnowledgeDebugState,
   buildSelfKnowledgeResponse,
@@ -30,7 +37,10 @@ export const app = Fastify({ logger: true });
 const activeTurns = new Map();
 
 await app.register(cors, {
-  origin: config.corsOrigin,
+  origin(origin, callback) {
+    callback(null, !origin || config.corsOrigins.includes(origin));
+  },
+  methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
 });
 
 await app.register(multipart, {
@@ -48,6 +58,25 @@ app.get("/api/health", async () => ({
   providerConfigured: provider.isConfigured(),
   providerCatalog: getProviderCatalog(),
 }));
+
+app.get("/api/settings/providers", async () => ({
+  providerCatalog: getProviderCatalog(),
+}));
+
+app.get("/api/providers/catalog", async () => buildModelCatalog());
+
+app.patch("/api/settings/providers", async (request, reply) => {
+  try {
+    const routes = saveProviderSettings(request.body?.routes);
+    return {
+      providerCatalog: getProviderCatalog(),
+      routes,
+    };
+  } catch (error) {
+    reply.code(400);
+    return { error: error.message };
+  }
+});
 
 app.post("/api/voice/cancel", async (request, reply) => {
   const { sessionId } = request.body || {};
@@ -271,6 +300,7 @@ app.post("/api/voice/turn", async (request, reply) => {
     });
 
     const audioBuffer = await file.toBuffer();
+    const sttRoute = resolveProviderRoute("voice.stt");
     const timings = {
       captureEnd: fields.captureEndedAt?.value || startedAt.toISOString(),
       sttComplete: null,
@@ -282,10 +312,11 @@ app.post("/api/voice/turn", async (request, reply) => {
 
     sendEvent({ type: "status", phase: "transcribing", turnId: activeTurnId });
 
-    const transcription = await provider.transcribe({
+    const transcription = await sttRoute.provider.transcribe({
       audioBuffer,
       mimeType: file.mimetype,
       signal: abortController.signal,
+      model: sttRoute.model,
     });
 
     timings.sttComplete = new Date().toISOString();
@@ -366,6 +397,9 @@ async function runAssistantTurn({
   reply,
 }) {
   try {
+    const routing = getRoutingSelections();
+    const chatRoute = resolveProviderRoute("chat");
+    const ttsRoute = resolveProviderRoute("voice.tts");
     const selfKnowledgeResponse = buildSelfKnowledgeResponse(transcriptText, {
       explainTurnId: explainTurnId || null,
     });
@@ -375,7 +409,7 @@ async function runAssistantTurn({
     });
     const lookupPlan = selfKnowledgeResponse
       ? null
-      : await buildExternalLookupPlan(transcriptText, contextPackage, lookupPrivacyMode);
+      : await buildExternalLookupPlan(transcriptText, contextPackage, lookupPrivacyMode, routing);
 
     sendEvent({
       type: "context",
@@ -477,6 +511,7 @@ async function runAssistantTurn({
             question: transcriptText,
             lookupPlan,
             signal: abortController.signal,
+            routing,
           });
           providerUsage = freshArtifacts.usage;
           lookupArtifacts = freshArtifacts;
@@ -493,6 +528,7 @@ async function runAssistantTurn({
           question: transcriptText,
           lookupPlan,
           artifacts: lookupArtifacts,
+          routing,
         });
 
         assistantText = lookupResult.displayText || lookupResult.text;
@@ -536,7 +572,7 @@ async function runAssistantTurn({
 
         providerMetadata = buildProviderMetadata({
           api: "responses",
-          chatModel: config.externalLookupModel,
+          chatModel: routing["lookup.retrieval"]?.model,
           lookup: {
             status: "used",
             requestedPrivacyMode: lookupPlan.requestedPrivacyMode,
@@ -638,9 +674,10 @@ async function runAssistantTurn({
     if (!assistantText) {
       sendEvent({ type: "status", phase: "thinking", turnId });
 
-      const chatResult = await provider.streamChat({
+      const chatResult = await chatRoute.provider.streamChat({
         contextPackage,
         signal: abortController.signal,
+        model: routing.chat?.model,
         onDelta(delta) {
           assistantText += delta;
           if (!timings.chatFirstToken) {
@@ -662,9 +699,11 @@ async function runAssistantTurn({
     const speechText = spokenAnswerText || assistantText;
 
     try {
-      const speech = await provider.synthesizeSpeech({
+      const speech = await ttsRoute.provider.synthesizeSpeech({
         text: speechText,
         signal: abortController.signal,
+        model: routing["voice.tts"]?.model,
+        voice: routing["voice.tts"]?.voice,
       });
 
       timings.ttsComplete = new Date().toISOString();
@@ -793,12 +832,14 @@ function buildStoredTurn({
 }
 
 function buildProviderMetadata(overrides = {}) {
+  const routing = getRoutingSelections();
   return {
-    provider: "openai",
+    provider: routing.chat?.provider || "openai",
     api: "chat_completions",
-    sttModel: config.sttModel,
-    chatModel: config.chatModel,
-    ttsModel: config.ttsModel,
+    sttModel: routing["voice.stt"]?.model,
+    chatModel: routing.chat?.model,
+    ttsModel: routing["voice.tts"]?.model,
+    routes: routing,
     ...overrides,
   };
 }

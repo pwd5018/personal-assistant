@@ -72,6 +72,14 @@ db.exec(`
     last_used_at TEXT,
     hit_count INTEGER NOT NULL DEFAULT 0
   );
+
+  CREATE TABLE IF NOT EXISTS provider_settings (
+    route TEXT PRIMARY KEY,
+    provider_id TEXT NOT NULL,
+    model TEXT NOT NULL,
+    voice TEXT,
+    updated_at TEXT NOT NULL
+  );
 `);
 
 const ensureSummaryRow = db.prepare(`
@@ -81,6 +89,7 @@ const ensureSummaryRow = db.prepare(`
 `);
 
 ensureSummaryRow.run();
+ensureColumn("provider_settings", "voice", "TEXT");
 ensureColumn("approved_facts", "source_turn_id", "TEXT");
 ensureColumn("approved_facts", "category", "TEXT");
 ensureColumn("candidate_facts", "category", "TEXT");

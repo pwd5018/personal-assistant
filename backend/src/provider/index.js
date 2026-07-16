@@ -1,9 +1,19 @@
 import { OpenAiProvider } from "./openaiProvider.js";
+import { GeminiProvider } from "./geminiProvider.js";
+import { GroqProvider } from "./groqProvider.js";
 import { buildProviderDescriptor, buildRoutingCatalog, assertRouteName } from "./routing.js";
+import { store } from "../store.js";
+import { config } from "../config.js";
 
 const openAiProvider = new OpenAiProvider();
+const geminiProvider = new GeminiProvider();
+const groqProvider = new GroqProvider();
 
-export const providerRegistry = new Map([[openAiProvider.id, openAiProvider]]);
+export const providerRegistry = new Map([
+  [openAiProvider.id, openAiProvider],
+  [geminiProvider.id, geminiProvider],
+  [groqProvider.id, groqProvider],
+]);
 
 export const provider = openAiProvider;
 
@@ -12,25 +22,91 @@ export function getProviderCatalog() {
     providers: [...providerRegistry.values()].map((item) =>
       buildProviderDescriptor(item.getDescriptor())
     ),
-    routes: getRoutingDefaults(),
+    routes: getRoutingSelections(),
   });
 }
 
 export function getRoutingDefaults() {
+  const openAiDescriptor = openAiProvider.getDescriptor();
   return {
-    chat: { provider: "openai", capability: "chat" },
-    "voice.stt": { provider: "openai", capability: "transcription" },
-    "voice.tts": { provider: "openai", capability: "speech_synthesis" },
-    summary: { provider: "openai", capability: "summary" },
-    "lookup.decision": { provider: "openai", capability: "lookup_decision" },
-    "lookup.composition": { provider: "openai", capability: "lookup_composition" },
-    fact_extraction: { provider: "openai", capability: "fact_extraction" },
+    chat: { provider: "openai", capability: "chat", model: openAiDescriptor.models.chat },
+    "voice.stt": { provider: "openai", capability: "transcription", model: openAiDescriptor.models.transcription },
+    "voice.tts": { provider: "openai", capability: "speech_synthesis", model: openAiDescriptor.models.speech_synthesis, voice: config.ttsVoice },
+    summary: { provider: "openai", capability: "summary", model: openAiDescriptor.models.summary },
+    "lookup.decision": { provider: "openai", capability: "lookup_decision", model: openAiDescriptor.models.lookup_decision },
+    "lookup.retrieval": { provider: "openai", capability: "lookup_retrieval", model: openAiDescriptor.models.lookup_retrieval },
+    "lookup.composition": { provider: "openai", capability: "lookup_composition", model: openAiDescriptor.models.lookup_composition },
+    fact_extraction: { provider: "openai", capability: "fact_extraction", model: openAiDescriptor.models.fact_extraction },
   };
+}
+
+export function getRoutingSelections() {
+  const defaults = getRoutingDefaults();
+  const persisted = new Map(store.getProviderSettings().map((setting) => [setting.route, setting]));
+
+  return Object.fromEntries(
+    Object.entries(defaults).map(([route, selection]) => {
+      const saved = persisted.get(route);
+      return [
+        route,
+        saved && isValidSelection(route, saved.provider_id, saved.model)
+          ? {
+              provider: saved.provider_id,
+              capability: selection.capability,
+              model: saved.model,
+              voice: isValidVoice(route, saved.provider_id, saved.voice)
+                ? saved.voice
+                : getDefaultVoice(saved.provider_id) || selection.voice || null,
+              updatedAt: saved.updated_at,
+            }
+        : selection,
+      ];
+    })
+  );
+}
+
+export function validateProviderSettings(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Provider settings must be an object keyed by route.");
+  }
+
+  const normalized = [];
+  for (const [route, selection] of Object.entries(input)) {
+    assertRouteName(route);
+    if (!selection || typeof selection !== "object" || Array.isArray(selection)) {
+      throw new Error(`Provider settings for ${route} must be an object.`);
+    }
+
+    const providerId = String(selection.provider || "").trim();
+    const model = String(selection.model || "").trim();
+    const voice = selection.voice == null ? null : String(selection.voice).trim();
+    if (!providerId || !model) {
+      throw new Error(`Provider and model are required for route ${route}.`);
+    }
+
+    if (!isValidSelection(route, providerId, model)) {
+      throw new Error(`Provider ${providerId} does not support route ${route}.`);
+    }
+
+    if (voice && !isValidVoice(route, providerId, voice)) {
+      throw new Error(`Voice ${voice} is not supported for route ${route}.`);
+    }
+
+    normalized.push({ route, providerId, model, voice: voice || getDefaultVoice(providerId) || null });
+  }
+
+  return normalized;
+}
+
+export function saveProviderSettings(input) {
+  const normalized = validateProviderSettings(input);
+  store.upsertProviderSettings(normalized);
+  return getRoutingSelections();
 }
 
 export function resolveProviderRoute(route) {
   assertRouteName(route);
-  const selection = getRoutingDefaults()[route];
+  const selection = getRoutingSelections()[route];
   const selectedProvider = providerRegistry.get(selection.provider);
 
   if (!selectedProvider) {
@@ -46,6 +122,31 @@ export function resolveProviderRoute(route) {
     provider: selectedProvider,
     providerId: selection.provider,
     capability: selection.capability,
-    model: selectedProvider.getDescriptor().models[selection.capability] || null,
+    model: selection.model || null,
+    voice: selection.voice || null,
   };
+}
+
+function isValidVoice(route, providerId, voice) {
+  if (route !== "voice.tts" || !voice) return false;
+  const voices = providerRegistry.get(providerId)?.getDescriptor().voices?.speech_synthesis || [];
+  return voices.includes(voice);
+}
+
+function getDefaultVoice(providerId) {
+  if (providerId === "openai") return config.ttsVoice;
+  if (providerId === "gemini") return config.geminiTtsVoice;
+  if (providerId === "groq") return "autumn";
+  return providerRegistry.get(providerId)?.getDescriptor().voices?.speech_synthesis?.[0] || null;
+}
+
+function isValidSelection(route, providerId, model) {
+  const defaultSelection = getRoutingDefaults()[route];
+  const selectedProvider = providerRegistry.get(providerId);
+  return Boolean(
+    defaultSelection &&
+      selectedProvider &&
+      model &&
+      selectedProvider.getDescriptor().capabilities.includes(defaultSelection.capability)
+  );
 }

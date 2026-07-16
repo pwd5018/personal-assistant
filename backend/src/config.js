@@ -12,7 +12,17 @@ export const config = {
   port: Number(process.env.PORT || 8787),
   host: process.env.HOST || "127.0.0.1",
   corsOrigin: process.env.CORS_ORIGIN || "http://127.0.0.1:5173",
+  corsOrigins: buildCorsOrigins(process.env.CORS_ORIGIN),
   openAiApiKey: process.env.OPENAI_API_KEY || "",
+  geminiApiKey: process.env.GEMINI_API_KEY || "",
+  groqApiKey: process.env.GROQ_API_KEY || "",
+  geminiChatModel: process.env.GEMINI_CHAT_MODEL || "gemini-2.5-flash",
+  geminiSummaryModel: process.env.GEMINI_SUMMARY_MODEL || "gemini-2.5-flash",
+  geminiTtsModel: process.env.GEMINI_TTS_MODEL || "gemini-3.1-flash-tts-preview",
+  geminiTtsVoice: process.env.GEMINI_TTS_VOICE || "Kore",
+  groqChatModel: process.env.GROQ_CHAT_MODEL || "llama-3.3-70b-versatile",
+  groqSttModel: process.env.GROQ_STT_MODEL || "whisper-large-v3-turbo",
+  groqTtsModel: process.env.GROQ_TTS_MODEL || "canopylabs/orpheus-v1-english",
   chatModel: process.env.OPENAI_CHAT_MODEL || "gpt-4.1-mini",
   summaryModel: process.env.OPENAI_SUMMARY_MODEL || "gpt-4.1-nano",
   factExtractionModel:
@@ -67,4 +77,17 @@ function normalizeSearchContextSize(value) {
     .toLowerCase();
 
   return ["low", "medium", "high"].includes(normalized) ? normalized : "medium";
+}
+
+function buildCorsOrigins(value) {
+  const configured = String(value || "http://127.0.0.1:5173")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+  if (configured.some((origin) => origin.includes("127.0.0.1:5173") || origin.includes("localhost:5173"))) {
+    return [...new Set([...configured, "http://127.0.0.1:5173", "http://localhost:5173"])]
+  }
+
+  return configured;
 }

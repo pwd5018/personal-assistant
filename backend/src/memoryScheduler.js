@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { provider } from "./provider/index.js";
+import { getRoutingSelections, resolveProviderRoute, provider } from "./provider/index.js";
 import { store } from "./store.js";
 
 class MemoryScheduler {
@@ -23,11 +23,16 @@ class MemoryScheduler {
 
   async extractForTurn(turn) {
     try {
+      const factRoute = resolveProviderRoute("fact_extraction");
+      if (!factRoute.provider.isConfigured()) {
+        return;
+      }
       const existingApprovedFacts = store.getApprovedFacts();
-      const candidateFacts = await provider.extractCandidateFacts({
+      const candidateFacts = await factRoute.provider.extractCandidateFacts({
         transcriptText: turn.transcriptText,
         assistantText: turn.assistantText,
         existingApprovedFacts,
+        model: getRoutingSelections().fact_extraction?.model,
       });
 
       if (!candidateFacts.length) {

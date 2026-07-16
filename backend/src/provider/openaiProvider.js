@@ -38,6 +38,7 @@ export class OpenAiProvider {
         "speech_synthesis",
         "summary",
         "lookup_decision",
+        "lookup_retrieval",
         "lookup_composition",
         "fact_extraction",
       ],
@@ -47,8 +48,12 @@ export class OpenAiProvider {
         speech_synthesis: config.ttsModel,
         summary: config.summaryModel,
         lookup_decision: config.externalLookupDecisionModel,
+        lookup_retrieval: config.externalLookupModel,
         lookup_composition: config.externalLookupCompositionModel,
         fact_extraction: config.factExtractionModel,
+      },
+      voices: {
+        speech_synthesis: ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"],
       },
     };
   }
@@ -59,7 +64,7 @@ export class OpenAiProvider {
     }
   }
 
-  async transcribe({ audioBuffer, mimeType, signal }) {
+  async transcribe({ audioBuffer, mimeType, signal, model }) {
     this.assertConfigured();
 
     const file = await toFile(audioBuffer, "voice-input.webm", {
@@ -69,7 +74,7 @@ export class OpenAiProvider {
     const result = await this.client.audio.transcriptions.create(
       {
         file,
-        model: config.sttModel,
+        model: model || config.sttModel,
       },
       { signal }
     );
@@ -80,13 +85,13 @@ export class OpenAiProvider {
     };
   }
 
-  async streamChat({ contextPackage, signal, onDelta }) {
+  async streamChat({ contextPackage, signal, onDelta, model }) {
     this.assertConfigured();
 
     const messages = buildChatMessages(contextPackage);
     const stream = await this.client.chat.completions.create(
       {
-        model: config.chatModel,
+        model: model || config.chatModel,
         messages,
         stream: true,
         stream_options: { include_usage: true },
@@ -146,12 +151,12 @@ export class OpenAiProvider {
     };
   }
 
-  async fetchExternalLookupArtifacts({ question, lookupPlan, signal }) {
+  async fetchExternalLookupArtifacts({ question, lookupPlan, signal, model }) {
     this.assertConfigured();
 
     const response = await this.client.responses.create(
       {
-        model: config.externalLookupModel,
+        model: model || config.externalLookupModel,
         tools: [
           {
             type: "web_search_preview",
@@ -181,6 +186,7 @@ export class OpenAiProvider {
     rawText,
     citations = [],
     webSearches = [],
+    model,
   }) {
     this.assertConfigured();
 
@@ -190,6 +196,7 @@ export class OpenAiProvider {
       rawText,
       citations,
       webSearches,
+      model,
     });
     const extraction = await extractLookupAnswerData.call(this, {
       question,
@@ -198,6 +205,7 @@ export class OpenAiProvider {
       citations,
       webSearches,
       evidence,
+      model,
     });
     const normalizedEvidence = reconcileLookupEvidence({
       evidence,
@@ -213,6 +221,7 @@ export class OpenAiProvider {
       webSearches,
       evidence: normalizedEvidence,
       extraction,
+      model,
     });
 
     return {
@@ -228,12 +237,12 @@ export class OpenAiProvider {
     };
   }
 
-  async classifyExternalLookupNeed({ question, recentTurns = [] }) {
+  async classifyExternalLookupNeed({ question, recentTurns = [], model }) {
     this.assertConfigured();
 
     const response = await this.client.chat.completions.create(
       {
-        model: config.externalLookupDecisionModel,
+        model: model || config.externalLookupDecisionModel,
         messages: buildExternalLookupDecisionMessages({ question, recentTurns }),
         response_format: { type: "json_object" },
       }
@@ -245,7 +254,7 @@ export class OpenAiProvider {
     );
   }
 
-  async resolveLookupEntity({ question, questionKind = "other", candidates = [] }) {
+  async resolveLookupEntity({ question, questionKind = "other", candidates = [], model }) {
     this.assertConfigured();
 
     if (!Array.isArray(candidates) || !candidates.length) {
@@ -253,7 +262,7 @@ export class OpenAiProvider {
     }
 
     const response = await this.client.chat.completions.create({
-      model: config.externalLookupDecisionModel,
+      model: model || config.externalLookupDecisionModel,
       messages: buildLookupEntityResolutionMessages({
         question,
         questionKind,
@@ -267,7 +276,7 @@ export class OpenAiProvider {
     );
   }
 
-  async synthesizeSpeech({ text, signal }) {
+  async synthesizeSpeech({ text, signal, model, voice }) {
     this.assertConfigured();
     const speechInput = normalizeSpeechInput(text);
 
@@ -277,8 +286,8 @@ export class OpenAiProvider {
 
     const response = await this.client.audio.speech.create(
       {
-        model: config.ttsModel,
-        voice: config.ttsVoice,
+        model: model || config.ttsModel,
+        voice: voice || config.ttsVoice,
         input: speechInput,
         format: "mp3",
       },
@@ -293,7 +302,7 @@ export class OpenAiProvider {
     };
   }
 
-  async summarizeConversation({ transcriptWindow, existingSummary, approvedFacts = [] }) {
+  async summarizeConversation({ transcriptWindow, existingSummary, approvedFacts = [], model }) {
     this.assertConfigured();
 
     const prompt = [
@@ -325,7 +334,7 @@ export class OpenAiProvider {
       .join("\n\n");
 
     const response = await this.client.chat.completions.create({
-      model: config.summaryModel,
+      model: model || config.summaryModel,
       messages: [{ role: "system", content: prompt }],
     });
 
@@ -336,6 +345,7 @@ export class OpenAiProvider {
     transcriptText,
     assistantText,
     existingApprovedFacts,
+    model,
   }) {
     this.assertConfigured();
 
@@ -377,7 +387,7 @@ export class OpenAiProvider {
 
     try {
       const response = await this.client.chat.completions.create({
-        model: config.factExtractionModel,
+        model: model || config.factExtractionModel,
         messages: [{ role: "system", content: prompt }],
       });
 
@@ -669,13 +679,14 @@ async function composeExternalLookupAnswerWithModel({
   lookupPlan,
   compactedText,
   citations,
+  model,
 }) {
   if (!compactedText) {
     return null;
   }
 
   const response = await this.client.chat.completions.create({
-    model: config.externalLookupCompositionModel,
+    model: model || config.externalLookupCompositionModel,
     messages: buildExternalLookupCompositionMessages({
       question,
       questionKind: lookupPlan?.questionKind || "other",
@@ -690,7 +701,7 @@ async function composeExternalLookupAnswerWithModel({
   );
 }
 
-async function gradeLookupEvidence({ question, lookupPlan, rawText, citations, webSearches }) {
+async function gradeLookupEvidence({ question, lookupPlan, rawText, citations, webSearches, model }) {
   const fallback = buildFallbackEvidenceGrade({ citations, webSearches, rawText });
   const sourceLabels = citations
     .slice(0, 4)
@@ -699,7 +710,7 @@ async function gradeLookupEvidence({ question, lookupPlan, rawText, citations, w
 
   try {
     const response = await this.client.chat.completions.create({
-      model: config.externalLookupCompositionModel,
+      model: model || config.externalLookupCompositionModel,
       messages: [
         {
           role: "system",
@@ -743,6 +754,7 @@ async function extractLookupAnswerData({
   citations,
   webSearches,
   evidence,
+  model,
 }) {
   const fallback = buildFallbackAnswerExtraction({
     question,
@@ -759,7 +771,7 @@ async function extractLookupAnswerData({
 
   try {
     const response = await this.client.chat.completions.create({
-      model: config.externalLookupCompositionModel,
+      model: model || config.externalLookupCompositionModel,
       messages: [
         {
           role: "system",
@@ -1485,6 +1497,7 @@ async function composeExternalLookupResponse({
   webSearches,
   evidence,
   extraction,
+  model,
 }) {
   const resolvedEvidence = evidence || buildFallbackEvidenceGrade({ citations, webSearches, rawText });
   const resolvedExtraction =
@@ -1534,6 +1547,7 @@ async function composeExternalLookupResponse({
       lookupPlan,
       compactedText,
       citations,
+      model,
     });
   } catch {
     modelComposition = null;

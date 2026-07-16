@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
 import { app } from "../src/server.js";
-import { provider } from "../src/provider/index.js";
+import { getRoutingDefaults, provider, saveProviderSettings } from "../src/provider/index.js";
 import { store } from "../src/store.js";
 
 const ORIGINAL_IS_CONFIGURED = provider.isConfigured;
@@ -54,6 +54,89 @@ test("preview endpoint returns a structured lookup preview", async () => {
   assert.equal(body.preview.questionKind, "weather");
   assert.equal(body.preview.lookupNeeded, true);
   assert.ok(["resolved", "ambiguous", "unresolved"].includes(body.preview.resolutionStatus));
+});
+
+test("provider settings endpoint returns the routing catalog", async () => {
+  const response = await app.inject({
+    method: "GET",
+    url: "/api/settings/providers",
+  });
+
+  assert.equal(response.statusCode, 200);
+  const body = response.json();
+  assert.equal(body.providerCatalog.providers[0].id, "openai");
+  assert.ok(body.providerCatalog.routes.chat.model);
+});
+
+test("provider settings endpoint validates unsupported selections", async () => {
+  const response = await app.inject({
+    method: "PATCH",
+    url: "/api/settings/providers",
+    payload: {
+      routes: {
+        summary: { provider: "groq", model: "groq-test" },
+      },
+    },
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.match(response.json().error, /does not support route summary/);
+});
+
+test("retry applies saved chat and TTS models and stores the routing snapshot", async () => {
+  const defaults = getRoutingDefaults();
+  const observed = { chat: null, tts: null, ttsVoice: null };
+  saveProviderSettings({
+    chat: { provider: "openai", model: "test-chat-route-model" },
+    "voice.tts": { provider: "openai", model: "test-tts-route-model", voice: "coral" },
+  });
+
+  provider.isConfigured = () => true;
+  provider.classifyExternalLookupNeed = async () => ({
+    needed: false,
+    questionKind: "general_chat",
+    answerMode: "model_only",
+    needsResolution: false,
+    canUseLocalMemoryForResolution: false,
+    reason: "test",
+    matchedSignals: [],
+    confidence: 0.95,
+  });
+  provider.streamChat = async ({ model, onDelta }) => {
+    observed.chat = model;
+    onDelta("Test reply.");
+    return { usage: { total_tokens: 1 } };
+  };
+  provider.synthesizeSpeech = async ({ model, voice, text }) => {
+    observed.tts = model;
+    observed.ttsVoice = voice;
+    return { audioBuffer: Buffer.from("audio"), mimeType: "audio/mpeg", speechInput: text };
+  };
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/voice/retry",
+      payload: {
+        sessionId: "routing-snapshot-session",
+        turnId: `routing-snapshot-${randomUUID()}`,
+        transcriptText: "Say a test reply.",
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    const turn = extractTurnComplete(response.body);
+    assert.equal(observed.chat, "test-chat-route-model");
+    assert.equal(observed.tts, "test-tts-route-model");
+    assert.equal(observed.ttsVoice, "coral");
+    assert.equal(turn.provider.routes.chat.model, "test-chat-route-model");
+    assert.equal(turn.provider.routes["voice.tts"].model, "test-tts-route-model");
+  } finally {
+    saveProviderSettings({
+      chat: { provider: "openai", model: defaults.chat.model },
+      "voice.tts": { provider: "openai", model: defaults["voice.tts"].model },
+    });
+  }
 });
 
 test("debug turn endpoint returns parsed provider metadata", async () => {

@@ -1,5 +1,5 @@
 import { config } from "./config.js";
-import { provider } from "./provider/index.js";
+import { getRoutingSelections, resolveProviderRoute, provider } from "./provider/index.js";
 import { store } from "./store.js";
 
 class SummaryScheduler {
@@ -30,7 +30,8 @@ class SummaryScheduler {
   }
 
   async run() {
-    if (this.running || !provider.isConfigured()) {
+    const summaryRoute = resolveProviderRoute("summary");
+    if (this.running || !summaryRoute.provider.isConfigured()) {
       return;
     }
 
@@ -44,10 +45,11 @@ class SummaryScheduler {
         return;
       }
 
-      const nextSummary = await provider.summarizeConversation({
+      const nextSummary = await summaryRoute.provider.summarizeConversation({
         transcriptWindow,
         existingSummary,
         approvedFacts,
+        model: getRoutingSelections().summary?.model,
       });
 
       if (nextSummary) {

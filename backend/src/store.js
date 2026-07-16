@@ -67,6 +67,22 @@ const updateSummaryStatement = db.prepare(`
   WHERE id = 1
 `);
 
+const providerSettingsStatement = db.prepare(`
+  SELECT route, provider_id, model, voice, updated_at
+  FROM provider_settings
+  ORDER BY route ASC
+`);
+
+const upsertProviderSettingStatement = db.prepare(`
+  INSERT INTO provider_settings (route, provider_id, model, voice, updated_at)
+  VALUES (@route, @provider_id, @model, @voice, @updated_at)
+  ON CONFLICT(route) DO UPDATE SET
+    provider_id = excluded.provider_id,
+    model = excluded.model,
+    voice = excluded.voice,
+    updated_at = excluded.updated_at
+`);
+
 const approvedFactsStatement = db.prepare(`
   SELECT id, fact_text, source_turn_id, category, created_at
   FROM approved_facts
@@ -255,6 +271,25 @@ export const store = {
 
   updateRollingSummary(summaryText, updatedAt) {
     updateSummaryStatement.run(summaryText, updatedAt);
+  },
+
+  getProviderSettings() {
+    return providerSettingsStatement.all();
+  },
+
+  upsertProviderSettings(settings) {
+    const updatedAt = new Date().toISOString();
+    for (const setting of settings) {
+      upsertProviderSettingStatement.run({
+        route: setting.route,
+        provider_id: setting.providerId,
+        model: setting.model,
+        voice: setting.voice || null,
+        updated_at: updatedAt,
+      });
+    }
+
+    return this.getProviderSettings();
   },
 
   getApprovedFacts() {

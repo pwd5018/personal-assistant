@@ -219,6 +219,14 @@ export default function App() {
     providerConfigured: false,
     checkedAt: "",
   });
+  const [providerCatalog, setProviderCatalog] = useState(null);
+  const [modelCatalog, setModelCatalog] = useState(null);
+  const [providerSettingsDraft, setProviderSettingsDraft] = useState({});
+  const [providerSettingsState, setProviderSettingsState] = useState({
+    saving: false,
+    error: "",
+    saved: false,
+  });
   const [recorderReady, setRecorderReady] = useState(false);
   const [voiceState, dispatch] = useReducer(voiceReducer, initialTurnState);
 
@@ -265,14 +273,16 @@ export default function App() {
     ...group,
     facts: pendingFacts.filter((fact) => (fact.recommendation || "review") === group.key),
   })).filter((group) => group.facts.length > 0);
+  const hasProviderSettingsChanges = Object.keys(providerSettingsDraft).length > 0;
 
   async function loadDebugState() {
     try {
-      const [healthResponse, debugResponse, memoryResponse, selfKnowledgeResponse] = await Promise.all([
+      const [healthResponse, debugResponse, memoryResponse, selfKnowledgeResponse, modelCatalogResponse] = await Promise.all([
         fetch(`${API_BASE}/api/health`),
         fetch(`${API_BASE}/api/debug/turns`),
         fetch(`${API_BASE}/api/memory`),
         fetch(`${API_BASE}/api/debug/self-knowledge`),
+        fetch(`${API_BASE}/api/providers/catalog`),
       ]);
       if (!healthResponse.ok) {
         throw new Error(`Health fetch failed with ${healthResponse.status}.`);
@@ -286,17 +296,23 @@ export default function App() {
       if (!selfKnowledgeResponse.ok) {
         throw new Error(`Self-knowledge fetch failed with ${selfKnowledgeResponse.status}.`);
       }
+      if (!modelCatalogResponse.ok) {
+        throw new Error(`Model catalog fetch failed with ${modelCatalogResponse.status}.`);
+      }
 
       const healthData = await healthResponse.json();
       const debugData = await debugResponse.json();
       const memoryData = await memoryResponse.json();
       const selfKnowledgeData = await selfKnowledgeResponse.json();
+      const modelCatalogData = await modelCatalogResponse.json();
       const nextHistory = debugData.turns || [];
       setAppStatus({
         backendReachable: Boolean(healthData.ok),
-        providerConfigured: Boolean(healthData.providerConfigured),
+        providerConfigured: Boolean((healthData.providerCatalog?.providers || []).some((item) => item.configured)),
         checkedAt: new Date().toISOString(),
       });
+      setProviderCatalog(healthData.providerCatalog || null);
+      setModelCatalog(modelCatalogData || null);
       setHistory(nextHistory);
       setRollingSummary(debugData.rollingSummary || { summary_text: "", updated_at: "" });
       setCandidateFacts(memoryData.candidateFacts || []);
@@ -320,6 +336,57 @@ export default function App() {
         }),
       });
     }
+  }
+
+  async function saveProviderSettings() {
+    setProviderSettingsState({ saving: true, error: "", saved: false });
+    try {
+      const response = await fetch(`${API_BASE}/api/settings/providers`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ routes: providerSettingsDraft }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || `Provider settings save failed with ${response.status}.`);
+      }
+
+      setProviderCatalog(data.providerCatalog || null);
+      setProviderSettingsDraft({});
+      setProviderSettingsState({ saving: false, error: "", saved: true });
+    } catch (error) {
+      setProviderSettingsState({ saving: false, error: error.message, saved: false });
+    }
+  }
+
+  function updateProviderSetting(route, field, value) {
+    const routeSetting = providerCatalog?.routes?.[route] || {};
+    const nextSelection = {
+      ...(providerSettingsDraft[route] || routeSetting || {}),
+      [field]: value,
+    };
+
+    if (field === "provider") {
+      const modelCatalogProvider = (modelCatalog?.providers || []).find((item) => item.id === value);
+      const providerDescriptor = (providerCatalog?.providers || []).find((item) => item.id === value);
+      const compatibleModels = (modelCatalogProvider?.models || []).filter((model) =>
+        model.capabilities?.includes(routeSetting.capability)
+      );
+      nextSelection.model =
+        compatibleModels[0]?.id ||
+        modelCatalogProvider?.models?.find((model) => model.capabilities?.includes(routeSetting.capability))?.id ||
+        "";
+      const voices = providerDescriptor?.voices?.speech_synthesis || [];
+      if (route === "voice.tts") {
+        nextSelection.voice = voices[0] || "";
+      }
+    }
+
+    setProviderSettingsDraft((current) => ({
+      ...current,
+      [route]: nextSelection,
+    }));
+    setProviderSettingsState((current) => ({ ...current, saved: false, error: "" }));
   }
 
   async function resolveCandidateFact(id, resolutionNote) {
@@ -949,6 +1016,9 @@ export default function App() {
           <button className={mode === "debug" ? "active" : ""} onClick={() => setMode("debug")}>
             Debug / History
           </button>
+          <button className={mode === "settings" ? "active" : ""} onClick={() => setMode("settings")}>
+            Settings
+          </button>
         </div>
         <div className="status-card">
           <span>State</span>
@@ -997,9 +1067,24 @@ export default function App() {
                     <span>Backend</span>
                     <strong>{appStatus.backendReachable ? "Connected" : "Start local server"}</strong>
                   </div>
-                  <div className="quickstart-row">
-                    <span>OpenAI key</span>
-                    <strong>{appStatus.providerConfigured ? "Configured" : "Add backend/.env"}</strong>
+                  <div className="quickstart-row quickstart-provider-row">
+                    <span>Provider access</span>
+                    <strong>{getConfiguredProviderSummary(providerCatalog)}</strong>
+                  </div>
+                  <div className="provider-status-list">
+                    {providerCatalog?.providers?.length ? providerCatalog.providers.map((item) => (
+                      <div className="provider-status-item" key={item.id}>
+                        <span>{item.label}</span>
+                        <strong className={item.configured ? "provider-ready" : "provider-missing"}>
+                          {item.configured ? "Configured" : "Missing"}
+                        </strong>
+                      </div>
+                    )) : (
+                      <div className="provider-status-item">
+                        <span>No provider status available</span>
+                        <strong className="provider-missing">Check backend</strong>
+                      </div>
+                    )}
                   </div>
                   <div className="quickstart-row">
                     <span>Microphone</span>
@@ -1327,6 +1412,179 @@ export default function App() {
                 </div>
               </div>
             </div>
+          </section>
+        ) : mode === "settings" ? (
+          <section className="settings-panel">
+            <div className="debug-header">
+              <div>
+                <p className="eyebrow">Settings</p>
+                <h2>Provider and model routing</h2>
+                <p className="lede">Choose which configured provider and model handles each part of the assistant loop.</p>
+              </div>
+              <div className="debug-metrics">
+                <div className="metric-card">
+                  <span>Backend</span>
+                  <strong>{appStatus.backendReachable ? "Connected" : "Offline"}</strong>
+                  <small>Local settings API</small>
+                </div>
+                <div className="metric-card">
+                  <span>Providers</span>
+                  <strong>{getConfiguredProviderSummary(providerCatalog)}</strong>
+                  <small>Keys stay in backend/.env</small>
+                </div>
+              </div>
+            </div>
+
+            {providerCatalog ? (
+              <>
+                <div className="debug-card settings-note-card">
+                  <label>How this works</label>
+                  <p>These choices are saved locally and applied to the next operation. API keys are never exposed to the browser.</p>
+                </div>
+                <div className="settings-route-grid">
+                  {Object.entries(providerCatalog.routes || {}).map(([route, routeSetting]) => {
+                    const current = providerSettingsDraft[route] || routeSetting || {};
+                    const providers = (providerCatalog.providers || []).filter((item) =>
+                      item.capabilities?.includes(routeSetting?.capability)
+                    );
+                    const selectedProvider = providers.find((item) => item.id === current.provider);
+                    const catalogProvider = (modelCatalog?.providers || []).find((item) => item.id === current.provider);
+                    const availableModels = (catalogProvider?.models || []).filter((model) =>
+                      model.capabilities?.includes(routeSetting?.capability)
+                    );
+                    const availableVoices = selectedProvider?.voices?.speech_synthesis || [];
+                    const selectedVoice = availableVoices.includes(current.voice)
+                      ? current.voice
+                      : availableVoices[0] || "";
+                    const selectedModel = availableModels.find((model) => model.id === current.model);
+                    return (
+                      <div className="debug-card settings-route-card" key={route}>
+                        <div className="settings-route-header">
+                          <div>
+                            <label>{formatProviderRouteLabel(route)}</label>
+                            <p className="card-subtitle">{formatProviderCapabilityLabel(routeSetting?.capability)}</p>
+                          </div>
+                          <span className={`status-pill ${selectedProvider?.configured ? "lookup-used" : "lookup-fallback"}`}>
+                            {selectedProvider?.configured ? "Configured" : "Needs key"}
+                          </span>
+                        </div>
+                        <label htmlFor={`provider-${route}`}>Provider</label>
+                        <select
+                          id={`provider-${route}`}
+                          value={current.provider || ""}
+                          onChange={(event) => updateProviderSetting(route, "provider", event.target.value)}
+                        >
+                          {providers.length ? (
+                            providers.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)
+                          ) : (
+                            <option value="">No compatible provider</option>
+                          )}
+                        </select>
+                        <label htmlFor={`model-${route}`}>Model</label>
+                        {availableModels.length ? (
+                          <select
+                            id={`model-${route}`}
+                            value={current.model || ""}
+                            onChange={(event) => updateProviderSetting(route, "model", event.target.value)}
+                          >
+                            {availableModels.map((model) => (
+                              <option key={model.id} value={model.id}>
+                                {model.displayName || model.id}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            id={`model-${route}`}
+                            value={current.model || ""}
+                            onChange={(event) => updateProviderSetting(route, "model", event.target.value)}
+                            placeholder="Model identifier"
+                          />
+                        )}
+                        {route === "voice.tts" ? (
+                          <>
+                            <label htmlFor={`voice-${route}`}>Voice</label>
+                            {availableVoices.length ? (
+                              <select
+                                id={`voice-${route}`}
+                                value={selectedVoice}
+                                onChange={(event) => updateProviderSetting(route, "voice", event.target.value)}
+                              >
+                                {availableVoices.map((voice) => (
+                                  <option key={voice} value={voice}>{voice}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <input
+                                id={`voice-${route}`}
+                                value={current.voice || ""}
+                                onChange={(event) => updateProviderSetting(route, "voice", event.target.value)}
+                                placeholder="Provider default voice"
+                              />
+                            )}
+                          </>
+                        ) : null}
+                        <small className="card-note">
+                          {selectedModel?.pricing?.status === "known"
+                            ? `${formatPricing(selectedModel.pricing)} · ${selectedModel.pricing.sourceUrl}`
+                            : selectedProvider?.configured
+                              ? `Pricing is maintained on the provider page: ${catalogProvider?.pricingSourceUrl || "not available"}`
+                            : "Configure this provider key in backend/.env before using it."}
+                        </small>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="debug-section settings-inventory-section">
+                  <div className="section-heading">
+                    <h3>Available model inventory</h3>
+                    <p>Models are discovered from configured provider APIs. Pricing is an estimate or reference link, not a billing statement.</p>
+                  </div>
+                  <div className="model-inventory-grid">
+                    {(modelCatalog?.providers || []).map((catalogProvider) => (
+                      <div className="debug-card model-inventory-card" key={catalogProvider.id}>
+                        <div className="settings-route-header">
+                          <div>
+                            <label>{catalogProvider.label}</label>
+                            <p className="card-subtitle">
+                              {catalogProvider.configured ? "API configured" : "API key not configured"}
+                            </p>
+                          </div>
+                          <span className="status-pill">{catalogProvider.models?.length || 0} models</span>
+                        </div>
+                        {catalogProvider.models?.length ? (
+                          <div className="model-inventory-list">
+                            {catalogProvider.models.slice(0, 12).map((model) => (
+                              <div className="model-inventory-row" key={model.id}>
+                                <div>
+                                  <strong>{model.displayName || model.id}</strong>
+                                  <small>{model.id} · {(model.capabilities || []).join(", ") || "capability metadata unavailable"}</small>
+                                </div>
+                                <span>{model.pricing?.status === "known" ? formatPricing(model.pricing) : "See pricing"}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="card-note">Add the provider key to discover available models.</p>
+                        )}
+                        <a className="pricing-source-link" href={catalogProvider.pricingSourceUrl} target="_blank" rel="noreferrer">
+                          Official pricing source
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="settings-actions">
+                  <button className="push-talk" onClick={saveProviderSettings} disabled={!hasProviderSettingsChanges || providerSettingsState.saving}>
+                    {providerSettingsState.saving ? "Saving..." : "Save routing settings"}
+                  </button>
+                  {providerSettingsState.saved ? <span className="status-pill lookup-used">Saved</span> : null}
+                  {providerSettingsState.error ? <span className="status-pill lookup-fallback">{providerSettingsState.error}</span> : null}
+                </div>
+              </>
+            ) : (
+              <div className="error-card"><p>Provider settings are unavailable until the backend is connected.</p></div>
+            )}
           </section>
         ) : (
           <section className="debug-panel">
@@ -2187,7 +2445,7 @@ function buildSetupMessage(appStatus, recorderReady) {
   }
 
   if (!appStatus.providerConfigured) {
-    return "The app is running locally, but live replies still need OPENAI_API_KEY in backend/.env.";
+    return "The app is running locally, but at least one provider key is needed in backend/.env for live replies.";
   }
 
   if (!recorderReady) {
@@ -2195,6 +2453,42 @@ function buildSetupMessage(appStatus, recorderReady) {
   }
 
   return "Everything needed for a normal voice session is ready.";
+}
+
+function getConfiguredProviderSummary(providerCatalog) {
+  const providers = providerCatalog?.providers || [];
+  const configuredCount = providers.filter((item) => item.configured).length;
+  return providers.length ? `${configuredCount} of ${providers.length} configured` : "Unavailable";
+}
+
+function formatProviderRouteLabel(route) {
+  return String(route || "")
+    .replace("voice.", "Voice ")
+    .replace("lookup.", "Lookup ")
+    .replace(/[._]/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatProviderCapabilityLabel(capability) {
+  return String(capability || "").replace(/_/g, " ") || "Provider capability";
+}
+
+function formatPricing(pricing) {
+  if (pricing.inputPerMillionUsd != null || pricing.outputPerMillionUsd != null) {
+    const input = pricing.inputPerMillionUsd != null ? `$${pricing.inputPerMillionUsd}/M in` : "";
+    const output = pricing.outputPerMillionUsd != null ? `$${pricing.outputPerMillionUsd}/M out` : "";
+    return [input, output].filter(Boolean).join(" · ");
+  }
+
+  if (pricing.audioPerHourUsd != null) {
+    return `$${pricing.audioPerHourUsd}/audio hour`;
+  }
+
+  if (pricing.outputPerMillionCharactersUsd != null) {
+    return `$${pricing.outputPerMillionCharactersUsd}/M characters`;
+  }
+
+  return "Pricing reference only";
 }
 
 const MEMORY_REVIEW_GROUPS = [

@@ -4,6 +4,7 @@ export const PROVIDER_ROUTE_NAMES = Object.freeze([
   "voice.tts",
   "summary",
   "lookup.decision",
+  "lookup.retrieval",
   "lookup.composition",
   "fact_extraction",
 ]);
@@ -14,6 +15,7 @@ export const PROVIDER_CAPABILITIES = Object.freeze([
   "speech_synthesis",
   "summary",
   "lookup_decision",
+  "lookup_retrieval",
   "lookup_composition",
   "fact_extraction",
 ]);
@@ -24,6 +26,7 @@ export function buildProviderDescriptor({
   configured,
   capabilities,
   models,
+  voices,
 }) {
   return {
     id,
@@ -32,6 +35,9 @@ export function buildProviderDescriptor({
     capabilities: PROVIDER_CAPABILITIES.filter((capability) => capabilities?.includes(capability)),
     models: Object.fromEntries(
       Object.entries(models || {}).map(([capability, model]) => [capability, String(model || "")])
+    ),
+    voices: Object.fromEntries(
+      Object.entries(voices || {}).map(([capability, values]) => [capability, [...values]])
     ),
   };
 }
@@ -45,6 +51,9 @@ export function buildRoutingCatalog({ providers, routes }) {
       ...provider,
       capabilities: [...provider.capabilities],
       models: { ...provider.models },
+      voices: Object.fromEntries(
+        Object.entries(provider.voices || {}).map(([capability, values]) => [capability, [...values]])
+      ),
     })),
   };
 }
