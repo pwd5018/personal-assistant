@@ -44,6 +44,14 @@ export class GeminiProvider {
             hintStyle: "natural_language_direction",
             streaming: false,
           },
+          "gemini-2.5-pro-preview-tts": {
+            sourceUrl: "https://ai.google.dev/gemini-api/docs/speech-generation",
+            catalogType: "documented",
+            dynamic: false,
+            supportsHint: true,
+            hintStyle: "natural_language_direction",
+            streaming: false,
+          },
         },
       },
     };
@@ -115,6 +123,48 @@ export class GeminiProvider {
     };
   }
 
+  async streamSpeech({ text, signal, model, voice, voiceHint }) {
+    if (!this.isConfigured()) throw new Error("GEMINI_API_KEY is not configured.");
+    const selectedModel = model || config.geminiTtsModel;
+    if (selectedModel !== "gemini-3.1-flash-tts-preview") {
+      throw new Error(`Gemini streaming TTS is not supported for ${selectedModel}.`);
+    }
+
+    const speechInput = voiceHint?.trim()
+      ? `Read the following text with this voice direction: ${voiceHint.trim()}\n\n${text}`
+      : text;
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/interactions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": config.geminiApiKey,
+          "Api-Revision": "2026-05-20",
+        },
+        body: JSON.stringify({
+          model: selectedModel,
+          input: speechInput,
+          response_format: { type: "audio" },
+          generation_config: {
+            speech_config: [{ voice: voice || config.geminiTtsVoice }],
+          },
+          stream: true,
+        }),
+        signal,
+      }
+    );
+    if (!response.ok) throw new Error(`Gemini streaming speech synthesis failed with ${response.status}.`);
+
+    return {
+      mimeType: "audio/pcm;rate=24000;channels=1",
+      finalMimeType: "audio/wav",
+      speechInput: text,
+      stream: readGeminiAudioStream(response.body),
+      finalize: (chunks) => wrapPcmAsWav(Buffer.concat(chunks)),
+    };
+  }
+
   async generateContent({ model, prompt, signal }) {
     if (!this.isConfigured()) throw new Error("GEMINI_API_KEY is not configured.");
     const response = await fetch(
@@ -153,6 +203,54 @@ function wrapPcmAsWav(pcmBuffer, sampleRate = 24000, channels = 1, bitsPerSample
   header.write("data", 36);
   header.writeUInt32LE(pcmBuffer.length, 40);
   return Buffer.concat([header, pcmBuffer]);
+}
+
+async function* readGeminiAudioStream(body) {
+  if (!body) throw new Error("Gemini streaming speech returned no response body.");
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      pending += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const events = pending.split(/\r?\n\r?\n/);
+      pending = events.pop() || "";
+
+      for (const eventText of events) {
+        const event = parseServerSentEvent(eventText);
+        const encodedAudio = event?.delta?.type === "audio" ? event.delta.data : null;
+        if (encodedAudio) yield Buffer.from(encodedAudio, "base64");
+      }
+
+      if (done) break;
+    }
+
+    if (pending.trim()) {
+      const event = parseServerSentEvent(pending);
+      const encodedAudio = event?.delta?.type === "audio" ? event.delta.data : null;
+      if (encodedAudio) yield Buffer.from(encodedAudio, "base64");
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function parseServerSentEvent(eventText) {
+  const data = eventText
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trim())
+    .join("\n");
+  if (!data || data === "[DONE]") return null;
+
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
 }
 
 function buildContextPrompt(contextPackage) {

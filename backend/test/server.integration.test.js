@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 
 import { app } from "../src/server.js";
-import { getRoutingDefaults, provider, saveProviderSettings } from "../src/provider/index.js";
+import { getRoutingDefaults, provider, providerRegistry, saveProviderSettings } from "../src/provider/index.js";
 import { store } from "../src/store.js";
 
 const ORIGINAL_IS_CONFIGURED = provider.isConfigured;
@@ -12,6 +12,9 @@ const ORIGINAL_FETCH_LOOKUP_ARTIFACTS = provider.fetchExternalLookupArtifacts;
 const ORIGINAL_COMPOSE_LOOKUP_RESULT = provider.composeExternalLookupResult;
 const ORIGINAL_SYNTHESIZE_SPEECH = provider.synthesizeSpeech;
 const ORIGINAL_STREAM_CHAT = provider.streamChat;
+const geminiProvider = providerRegistry.get("gemini");
+const ORIGINAL_GEMINI_IS_CONFIGURED = geminiProvider.isConfigured;
+const ORIGINAL_GEMINI_STREAM_SPEECH = geminiProvider.streamSpeech;
 
 test.before(async () => {
   await app.ready();
@@ -24,6 +27,8 @@ test.afterEach(() => {
   provider.composeExternalLookupResult = ORIGINAL_COMPOSE_LOOKUP_RESULT;
   provider.synthesizeSpeech = ORIGINAL_SYNTHESIZE_SPEECH;
   provider.streamChat = ORIGINAL_STREAM_CHAT;
+  geminiProvider.isConfigured = ORIGINAL_GEMINI_IS_CONFIGURED;
+  geminiProvider.streamSpeech = ORIGINAL_GEMINI_STREAM_SPEECH;
 });
 
 test.after(async () => {
@@ -33,6 +38,8 @@ test.after(async () => {
   provider.composeExternalLookupResult = ORIGINAL_COMPOSE_LOOKUP_RESULT;
   provider.synthesizeSpeech = ORIGINAL_SYNTHESIZE_SPEECH;
   provider.streamChat = ORIGINAL_STREAM_CHAT;
+  geminiProvider.isConfigured = ORIGINAL_GEMINI_IS_CONFIGURED;
+  geminiProvider.streamSpeech = ORIGINAL_GEMINI_STREAM_SPEECH;
   await app.close();
 });
 
@@ -253,11 +260,85 @@ test("retry passes the saved voice direction to buffered TTS and records its app
     });
 
     assert.equal(response.statusCode, 200);
+    const events = parseEvents(response.body);
     const turn = extractTurnComplete(response.body);
     assert.equal(observed.hint, "gentle, warm, and concise");
+    assert.deepEqual(events.filter((event) => event.type.startsWith("audio-")).map((event) => event.type), [
+      "audio-start",
+      "audio-chunk",
+      "audio-end",
+    ]);
+    assert.equal(events.find((event) => event.type === "audio-chunk").sequence, 0);
     assert.equal(turn.timings.routes["voice.tts"].synthesisMode, "buffered");
     assert.equal(turn.timings.routes["voice.tts"].hintApplied, true);
     assert.equal(turn.timings.routes["voice.tts"].hintCapability, "supported");
+  } finally {
+    saveProviderSettings({
+      "voice.tts": { provider: "openai", model: defaults["voice.tts"].model },
+    });
+  }
+});
+
+test("Gemini streaming TTS emits ordered audio chunks and preserves buffered replay compatibility", async () => {
+  const defaults = getRoutingDefaults();
+  saveProviderSettings({
+    "voice.tts": {
+      provider: "gemini",
+      model: "gemini-3.1-flash-tts-preview",
+      voice: "Kore",
+    },
+  });
+
+  provider.isConfigured = () => true;
+  provider.classifyExternalLookupNeed = async () => ({
+    needed: false,
+    questionKind: "general_chat",
+    answerMode: "model_only",
+    needsResolution: false,
+    canUseLocalMemoryForResolution: false,
+    reason: "test",
+    matchedSignals: [],
+    confidence: 0.95,
+  });
+  provider.streamChat = async ({ onDelta }) => {
+    onDelta("Streamed reply.");
+    return { usage: { total_tokens: 1 } };
+  };
+  geminiProvider.isConfigured = () => true;
+  geminiProvider.streamSpeech = async () => ({
+    mimeType: "audio/pcm;rate=24000;channels=1",
+    finalMimeType: "audio/wav",
+    speechInput: "Streamed reply.",
+    stream: (async function* () {
+      yield Buffer.from("chunk-one");
+      yield Buffer.from("chunk-two");
+    })(),
+    finalize: (chunks) => Buffer.concat(chunks),
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/voice/retry",
+      payload: {
+        sessionId: "gemini-stream-session",
+        turnId: `gemini-stream-${randomUUID()}`,
+        transcriptText: "Say a streamed reply.",
+      },
+    });
+
+    const events = parseEvents(response.body);
+    const chunks = events.filter((event) => event.type === "audio-chunk");
+    const turn = extractTurnComplete(response.body);
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(chunks.map((event) => event.sequence), [0, 1]);
+    assert.equal(chunks.every((event) => event.streaming === true), true);
+    assert.equal(events.find((event) => event.type === "audio-start").streaming, true);
+    assert.equal(events.find((event) => event.type === "audio-end").chunkCount, 2);
+    assert.equal(turn.audioMimeType, "audio/wav");
+    assert.equal(turn.timings.routes["voice.tts"].synthesisMode, "streaming");
+    assert.equal(turn.timings.routes["voice.tts"].audioChunkCount, 2);
+    assert.ok(turn.audioBase64);
   } finally {
     saveProviderSettings({
       "voice.tts": { provider: "openai", model: defaults["voice.tts"].model },
@@ -689,6 +770,7 @@ test("TTS cancellation is not converted into a successful text-only fallback", a
   assert.equal(response.statusCode, 200);
   const events = parseEvents(response.body);
   assert.equal(events.find((event) => event.type === "error")?.stage, "cancelled");
+  assert.equal(events.find((event) => event.type === "audio-cancelled")?.protocol, "v1");
   assert.equal(events.some((event) => event.type === "turn-complete"), false);
 });
 

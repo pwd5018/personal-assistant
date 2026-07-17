@@ -235,6 +235,8 @@ export default function App() {
   const streamRef = useRef(null);
   const chunksRef = useRef([]);
   const audioRef = useRef(null);
+  const streamingAudioRef = useRef(null);
+  const audioContextRef = useRef(null);
   const audioObjectUrlRef = useRef(null);
   const activeReaderRef = useRef(null);
   const activeFetchControllerRef = useRef(null);
@@ -863,14 +865,69 @@ export default function App() {
       return;
     }
 
+    if (event.type === "audio-start") {
+      if (event.streaming) {
+        startStreamingAudio(turnId, event);
+      }
+      return;
+    }
+
+    if (event.type === "audio-chunk") {
+      if (event.streaming) {
+        queueStreamingAudioChunk(turnId, event);
+      }
+      return;
+    }
+
+    if (event.type === "audio-end") {
+      if (event.streaming) {
+        finishStreamingAudio(turnId);
+      }
+      return;
+    }
+
+    if (event.type === "audio-cancelled") {
+      if (event.turnId === currentTurnIdRef.current) {
+        stopStreamingAudio();
+      }
+      return;
+    }
+
+    if (event.type === "audio-error") {
+      if (event.turnId === currentTurnIdRef.current) {
+        stopStreamingAudio();
+        dispatch({
+          type: "PLAYBACK_FAILED",
+          turnId,
+          kind: "failed",
+          message: event.message || "Streaming audio failed.",
+          at: new Date().toISOString(),
+        });
+      }
+      return;
+    }
+
     if (event.type === "turn-complete") {
+      if (event.turn.audioBase64) {
+        audioPayloadRef.current = {
+          turnId,
+          audioBase64: event.turn.audioBase64,
+          mimeType: event.turn.audioMimeType,
+        };
+      }
       dispatch({
         type: "TURN_COMPLETE",
         turnId,
         turn: event.turn,
       });
-      if (event.turn.audioBase64) {
+      if (event.turn.audioBase64 && !event.turn.audioStreaming) {
         playReturnedAudio(turnId, event.turn.audioBase64, event.turn.audioMimeType);
+      } else if (event.turn.audioStreaming) {
+        dispatch({
+          type: "CLIENT_TIMELINE",
+          turnId,
+          patch: { streamingCompatibilityAudioReadyAt: new Date().toISOString() },
+        });
       } else if (event.turn.failure?.stage === "tts") {
         dispatch({
           type: "PLAYBACK_STOPPED",
@@ -902,7 +959,7 @@ export default function App() {
 
   async function interruptTurn(reason = "manual_interrupt") {
     const hadActiveRecording = mediaRecorderRef.current?.state === "recording";
-    const hadPlayback = Boolean(audioRef.current);
+    const hadPlayback = Boolean(audioRef.current || streamingAudioRef.current);
     const hadActiveNetwork = Boolean(activeFetchControllerRef.current || activeReaderRef.current);
 
     if (!hadActiveRecording && !hadPlayback && !hadActiveNetwork && voiceState.phase === "idle") {
@@ -1022,6 +1079,129 @@ export default function App() {
     });
   }
 
+  function startStreamingAudio(turnId, event) {
+    stopStreamingAudio();
+    const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextConstructor) {
+      dispatch({
+        type: "PLAYBACK_FAILED",
+        turnId,
+        kind: "failed",
+        message: "This browser does not support streaming audio playback.",
+        at: new Date().toISOString(),
+      });
+      return;
+    }
+
+    const context = audioContextRef.current || new AudioContextConstructor();
+    audioContextRef.current = context;
+    streamingAudioRef.current = {
+      turnId,
+      context,
+      nextStartTime: 0,
+      sources: [],
+      pending: Promise.resolve(),
+      ended: false,
+      cancelled: false,
+      started: false,
+      sampleRate: parseAudioSampleRate(event.mimeType) || 24000,
+    };
+  }
+
+  function queueStreamingAudioChunk(turnId, event) {
+    const state = streamingAudioRef.current;
+    if (!state || state.turnId !== turnId || state.cancelled) return;
+    state.pending = state.pending
+      .then(async () => {
+        if (state.cancelled) return;
+        await state.context.resume();
+        const audioBytes = Uint8Array.from(atob(event.data || ""), (char) => char.charCodeAt(0));
+        const sampleCount = Math.floor(audioBytes.byteLength / 2);
+        if (!sampleCount) return;
+        const audioBuffer = state.context.createBuffer(1, sampleCount, state.sampleRate);
+        const channel = audioBuffer.getChannelData(0);
+        const view = new DataView(audioBytes.buffer, audioBytes.byteOffset, audioBytes.byteLength);
+        for (let index = 0; index < sampleCount; index += 1) {
+          channel[index] = view.getInt16(index * 2, true) / 32768;
+        }
+
+        const source = state.context.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(state.context.destination);
+        const startAt = Math.max(
+          state.context.currentTime + 0.02,
+          state.nextStartTime || state.context.currentTime + 0.02
+        );
+        state.nextStartTime = startAt + audioBuffer.duration;
+        state.sources.push(source);
+        source.onended = () => {
+          state.sources = state.sources.filter((item) => item !== source);
+          if (state.ended && !state.sources.length && streamingAudioRef.current === state) {
+            streamingAudioRef.current = null;
+            dispatch({
+              type: "PLAYBACK_STOPPED",
+              turnId,
+              message: "Streaming playback completed.",
+              hasAudio: true,
+            });
+          }
+        };
+        source.start(startAt);
+        if (!state.started) {
+          state.started = true;
+          dispatch({
+            type: "PLAYBACK_STARTED",
+            turnId,
+            at: new Date().toISOString(),
+          });
+        }
+      })
+      .catch(() => {
+        if (streamingAudioRef.current !== state) return;
+        stopStreamingAudio();
+        dispatch({
+          type: "PLAYBACK_FAILED",
+          turnId,
+          kind: "failed",
+          message: "Streaming audio could not play in the browser.",
+          at: new Date().toISOString(),
+        });
+      });
+  }
+
+  function finishStreamingAudio(turnId) {
+    const state = streamingAudioRef.current;
+    if (!state || state.turnId !== turnId) return;
+    state.pending = state.pending.then(() => {
+      state.ended = true;
+      if (!state.sources.length && streamingAudioRef.current === state) {
+        streamingAudioRef.current = null;
+        dispatch({
+          type: "PLAYBACK_STOPPED",
+          turnId,
+          message: "Streaming playback completed.",
+          hasAudio: true,
+        });
+      }
+    });
+  }
+
+  function stopStreamingAudio() {
+    const state = streamingAudioRef.current;
+    if (!state) return;
+    state.cancelled = true;
+    state.sources.forEach((source) => {
+      try {
+        source.stop();
+      } catch {
+        // Source may already have ended.
+      }
+      source.disconnect();
+    });
+    state.sources = [];
+    streamingAudioRef.current = null;
+  }
+
   function replayAudio() {
     const payload = audioPayloadRef.current;
     if (!payload) {
@@ -1032,11 +1212,20 @@ export default function App() {
   }
 
   function stopPlayback() {
+    const hadStreamingAudio = Boolean(streamingAudioRef.current);
+    stopStreamingAudio();
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
       audioRef.current = null;
       releaseAudioObjectUrl();
+      dispatch({
+        type: "PLAYBACK_STOPPED",
+        turnId: currentTurnIdRef.current,
+        message: "Playback stopped.",
+        hasAudio: Boolean(audioPayloadRef.current?.audioBase64),
+      });
+    } else if (hadStreamingAudio) {
       dispatch({
         type: "PLAYBACK_STOPPED",
         turnId: currentTurnIdRef.current,
@@ -1588,6 +1777,7 @@ export default function App() {
                             {availableModels.map((model) => (
                               <option key={model.id} value={model.id}>
                                 {model.displayName || model.id}
+                                {route === "voice.tts" ? ` · ${formatTtsCapabilityLabel(getVoiceSynthesisMetadata(selectedProvider, model.id))}` : ""}
                               </option>
                             ))}
                           </select>
@@ -1601,6 +1791,16 @@ export default function App() {
                         )}
                         {route === "voice.tts" ? (
                           <>
+                            <div className="settings-capability-row">
+                              <span className="status-pill">
+                                {formatTtsCapabilityLabel(getVoiceSynthesisMetadata(selectedProvider, current.model))}
+                              </span>
+                              <small className="card-note">
+                                {getVoiceSynthesisMetadata(selectedProvider, current.model)?.streaming
+                                  ? "Audio can arrive in chunks before synthesis finishes."
+                                  : "Audio uses the complete-response path."}
+                              </small>
+                            </div>
                             <label htmlFor={`voice-${route}`}>Voice</label>
                             {availableVoices.length ? (
                               <select
@@ -2611,10 +2811,24 @@ function getProviderVoices(providerDescriptor, model) {
   return catalog[model] || catalog["*"] || [];
 }
 
+function parseAudioSampleRate(mimeType) {
+  const match = String(mimeType || "").match(/(?:^|;)\s*rate=(\d+)/i);
+  return match ? Number(match[1]) : null;
+}
+
 function getVoiceSynthesisMetadata(providerDescriptor, model) {
   const catalog = providerDescriptor?.voiceMetadata?.speech_synthesis || {};
   if (Array.isArray(catalog)) return null;
   return catalog[model] || catalog["*"] || null;
+}
+
+function formatTtsCapabilityLabel(metadata) {
+  if (!metadata) return "TTS capability unavailable";
+  const capabilities = [
+    metadata.streaming ? "Streaming TTS" : "Buffered TTS",
+    metadata.supportsHint ? "Voice direction" : "No voice direction",
+  ];
+  return capabilities.join(" · ");
 }
 
 function formatProviderRouteLabel(route) {

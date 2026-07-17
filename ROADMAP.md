@@ -374,7 +374,47 @@ Execution order:
 Progress:
 
 - Steps 1 and 2 implemented: persisted voice hints, model-specific capability metadata, provider-specific buffered adaptation, unsupported-model validation, Settings controls, and buffered hint telemetry.
-- Verified with 63 backend tests and production builds for both workspaces.
+- Step 3 implemented: v1 audio-start/chunk/end/error/cancelled events now accompany the buffered path while the legacy complete-audio event remains available to the current browser.
+- Step 4 implemented: Gemini 3.1 TTS now consumes Interactions API SSE audio deltas, emits ordered PCM chunks, and finalizes a WAV compatibility payload; Gemini 2.5 and unsupported routes remain buffered.
+- Step 5 implemented: the browser now decodes Gemini PCM chunks with Web Audio, schedules them in order, stops queued sources on interruption, and keeps buffered replay compatibility.
+- Verified with 64 backend tests and production builds for both workspaces.
+
+Remaining validation:
+
+- A real Gemini 3.1 browser turn is still required to measure time-to-first-audio, confirm browser autoplay behavior, and validate live interruption across provider synthesis and queued playback.
+
+Phase 12 corrective follow-up plan:
+
+1. Repair explicit memory corrections first
+   - Detect direct corrections and negative preferences such as "I do not follow X" or "that was only a test question" before normal summary/fact extraction.
+   - Mark contradicted summary topics as invalidated for future context and prevent the stale rolling summary from reasserting them.
+   - Decide whether a durable negative preference should be saved as an explicit reviewed memory or remain a conversation-local correction; do not silently promote it.
+   - Add regression cases for correcting a prior test question, correcting an approved fact, and correcting only one item in a mixed statement.
+
+2. Bound memory-based answers to traceable evidence
+   - Make "What do you remember?" enumerate approved facts and clearly labeled confirmed recent context only.
+   - Do not present rolling-summary claims as durable facts when they are absent from approved memory or contradicted by the current turn.
+   - Prevent unsupported extrapolations such as adding stock interest, travel habits, or other interests not present in the evidence.
+   - Add backend tests comparing approved facts, rolling summary, current correction text, and the final answer.
+
+3. Make first-audio latency measurable
+   - Record server `audioFirstChunkAt`, streamed chunk count, synthesis completion, and stream fallback details.
+   - Record browser `playbackStartedAt`, `playbackEndedAt`, queue delay, and interruption state for streamed turns.
+   - Persist or attach the client timing bundle to the corresponding stored turn so Debug/History can compare server and browser timings.
+   - Use time-to-first-audio as the primary Phase 12 latency measure; do not treat `ttsComplete` as playback start.
+
+4. Run live acceptance QA
+   - Test Gemini 3.1 streaming with a short and long reply, Gemini 2.5 buffered fallback, OpenAI/Groq buffered routes, voice-direction hints, autoplay handling, and mid-stream interruption.
+   - Confirm that streamed playback starts before the final compatibility payload arrives and that queued audio stops on cancellation.
+   - Re-run the corrected-memory conversation sequence and verify the next turn no longer repeats weather/Yankees claims.
+   - Close Phase 12 only after the live results and stored telemetry support the exit criteria; otherwise record the remaining defect explicitly.
+
+Sequencing:
+
+- First fix: explicit correction handling and stale-summary suppression.
+- Second fix: evidence-bounded memory answers.
+- Third fix: persisted client/server first-audio telemetry.
+- Final gate: live provider/browser acceptance QA.
 
 Known risks:
 

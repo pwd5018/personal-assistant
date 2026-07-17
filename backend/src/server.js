@@ -467,6 +467,8 @@ async function runAssistantTurn({
   sendEvent,
   reply,
 }) {
+  let audioProtocolStarted = false;
+  let audioChunkCount = 0;
   try {
     const routing = getRoutingSelections();
     const chatRoute = resolveProviderRoute("chat");
@@ -815,33 +817,130 @@ async function runAssistantTurn({
     sendEvent({ type: "status", phase: "speaking", turnId });
 
     let audioBase64 = null;
+    let audioMimeType = null;
     let spokenText = "";
     let ttsFailure = null;
     const speechText = spokenAnswerText || assistantText;
+    const streamingTts = Boolean(
+      ttsRoute.voiceHintMetadata?.streaming &&
+      typeof ttsRoute.provider.streamSpeech === "function"
+    );
 
     beginRouteTelemetry(timings, "voice.tts", ttsRoute);
     timings.routes["voice.tts"] = {
       ...timings.routes["voice.tts"],
-      synthesisMode: "buffered",
+      synthesisMode: streamingTts ? "streaming" : "buffered",
       hintCapability: ttsRoute.voiceHintMetadata?.supportsHint ? "supported" : "unsupported",
       hintStyle: ttsRoute.voiceHintMetadata?.hintStyle || "unsupported",
       hintApplied: Boolean(ttsRoute.voiceHint),
       fallbackReason: null,
+      audioProtocol: "v1",
+      audioChunkCount: 0,
     };
+    audioProtocolStarted = true;
+    sendEvent({
+      type: "audio-start",
+      turnId,
+      protocol: "v1",
+      streaming: streamingTts,
+      provider: ttsRoute.providerId,
+      model: ttsRoute.model,
+      voice: ttsRoute.voice,
+      mimeType: null,
+      startedAt: new Date().toISOString(),
+    });
     try {
-      const speech = await ttsRoute.provider.synthesizeSpeech({
-        text: speechText,
-        signal: abortController.signal,
-        model: routing["voice.tts"]?.model,
-        voice: routing["voice.tts"]?.voice,
-        voiceHint: ttsRoute.voiceHint,
-      });
+      let speech;
+      if (streamingTts) {
+        const streamResult = await ttsRoute.provider.streamSpeech({
+          text: speechText,
+          signal: abortController.signal,
+          model: routing["voice.tts"]?.model,
+          voice: routing["voice.tts"]?.voice,
+          voiceHint: ttsRoute.voiceHint,
+        });
+        const chunks = [];
+        let sequence = 0;
+        for await (const chunk of streamResult.stream) {
+          if (abortController.signal.aborted) {
+            throw createAbortError();
+          }
+
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          if (!buffer.length) continue;
+          chunks.push(buffer);
+          sendEvent({
+            type: "audio-chunk",
+            turnId,
+            protocol: "v1",
+            streaming: true,
+            sequence,
+            final: false,
+            mimeType: streamResult.mimeType,
+            byteLength: buffer.byteLength,
+            data: buffer.toString("base64"),
+            emittedAt: new Date().toISOString(),
+          });
+          sequence += 1;
+        }
+
+        if (!chunks.length) {
+          throw new Error("Gemini streaming speech returned no audio chunks.");
+        }
+
+        const audioBuffer = typeof streamResult.finalize === "function"
+          ? streamResult.finalize(chunks)
+          : Buffer.concat(chunks);
+        speech = {
+          audioBuffer,
+          mimeType: streamResult.finalMimeType || streamResult.mimeType,
+          speechInput: streamResult.speechInput || speechText,
+          streamedChunkCount: sequence,
+          streamedChunkMimeType: streamResult.mimeType,
+        };
+      } else {
+        speech = await ttsRoute.provider.synthesizeSpeech({
+          text: speechText,
+          signal: abortController.signal,
+          model: routing["voice.tts"]?.model,
+          voice: routing["voice.tts"]?.voice,
+          voiceHint: ttsRoute.voiceHint,
+        });
+      }
       finishRouteTelemetry(timings, "voice.tts", { status: "success" });
 
       timings.ttsComplete = new Date().toISOString();
       timings.playbackStart = timings.ttsComplete;
       audioBase64 = speech.audioBuffer.toString("base64");
+      audioMimeType = speech.mimeType || "application/octet-stream";
       spokenText = speech.speechInput || "";
+      audioChunkCount = speech.streamedChunkCount || 1;
+      timings.routes["voice.tts"].audioChunkCount = audioChunkCount;
+      if (!streamingTts) {
+        sendEvent({
+          type: "audio-chunk",
+          turnId,
+          protocol: "v1",
+          streaming: false,
+          sequence: 0,
+          final: true,
+          mimeType: audioMimeType,
+          byteLength: speech.audioBuffer.byteLength,
+          data: audioBase64,
+          emittedAt: new Date().toISOString(),
+        });
+      }
+      sendEvent({
+        type: "audio-end",
+        turnId,
+        protocol: "v1",
+        streaming: streamingTts,
+        chunkCount: audioChunkCount,
+        byteLength: speech.audioBuffer.byteLength,
+        mimeType: audioMimeType,
+        chunkMimeType: speech.streamedChunkMimeType || audioMimeType,
+        endedAt: new Date().toISOString(),
+      });
       sendEvent({ type: "playback-ready", turnId });
     } catch (error) {
       if (isAbortError(error)) {
@@ -854,6 +953,14 @@ async function runAssistantTurn({
       };
       timings.routes["voice.tts"].fallbackReason = "provider_error";
       finishRouteTelemetry(timings, "voice.tts", { status: "failed", error: ttsFailure });
+      sendEvent({
+        type: "audio-error",
+        turnId,
+        protocol: "v1",
+        stage: "tts",
+        message: error.message,
+        emittedAt: new Date().toISOString(),
+      });
     }
 
     const tokenUsage = {
@@ -905,7 +1012,8 @@ async function runAssistantTurn({
         spokenText,
         failure: ttsFailure,
         audioBase64,
-        audioMimeType: "audio/mpeg",
+        audioMimeType,
+        audioStreaming: streamingTts,
       },
     });
 
@@ -913,6 +1021,21 @@ async function runAssistantTurn({
     activeTurns.delete(sessionId);
   } catch (error) {
     const isAbort = isAbortError(error);
+
+    if (isAbort && audioProtocolStarted) {
+      timings.routes["voice.tts"] = {
+        ...(timings.routes["voice.tts"] || {}),
+        fallbackReason: "cancelled",
+        audioCancelledAt: new Date().toISOString(),
+      };
+      sendEvent({
+        type: "audio-cancelled",
+        turnId,
+        protocol: "v1",
+        chunkCount: audioChunkCount,
+        cancelledAt: new Date().toISOString(),
+      });
+    }
 
     sendEvent({
       type: "error",
@@ -989,6 +1112,12 @@ function buildProviderMetadata(overrides = {}) {
 
 function isAbortError(error) {
   return error?.name === "AbortError" || error?.code === "ABORT_ERR";
+}
+
+function createAbortError() {
+  const error = new Error("The audio stream was cancelled.");
+  error.name = "AbortError";
+  return error;
 }
 
 function normalizePrivacyMode(value) {

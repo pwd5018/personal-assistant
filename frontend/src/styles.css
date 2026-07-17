@@ -192,6 +192,14 @@ label {
   color: var(--ink);
 }
 
+.settings-capability-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 10px 0 2px;
+}
+
 .settings-actions {
   display: flex;
   align-items: center;
