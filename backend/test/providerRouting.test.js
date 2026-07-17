@@ -24,6 +24,8 @@ test("the initial routing catalog exposes all logical routes", () => {
   const geminiVoiceCatalog = catalog.providers.find((item) => item.id === "gemini").voices.speech_synthesis;
   assert.ok(Object.values(geminiVoiceCatalog).some((voices) => voices.length === 30));
   assert.deepEqual(catalog.providers.find((item) => item.id === "groq").voices.speech_synthesis["canopylabs/orpheus-v1-english"].includes("troy"), true);
+  assert.equal(catalog.providers.find((item) => item.id === "openai").voiceMetadata.speech_synthesis["gpt-4o-mini-tts"].supportsHint, true);
+  assert.equal(catalog.providers.find((item) => item.id === "gemini").voiceMetadata.speech_synthesis["gemini-3.1-flash-tts-preview"].supportsHint, true);
 });
 
 test("the persisted provider selection resolves for every route", () => {
@@ -109,6 +111,38 @@ test("Gemini is available for speech synthesis routing", () => {
 
   saveProviderSettings({
     "voice.tts": { provider: "openai", model: getRoutingDefaults()["voice.tts"].model },
+  });
+});
+
+test("voice direction persists only for supported TTS models", () => {
+  const defaults = getRoutingDefaults();
+  const updated = saveProviderSettings({
+    "voice.tts": {
+      provider: "openai",
+      model: "gpt-4o-mini-tts",
+      voice: "coral",
+      voiceHint: "warm, calm, and lightly playful",
+    },
+  });
+
+  assert.equal(updated["voice.tts"].voiceHint, "warm, calm, and lightly playful");
+  assert.equal(resolveProviderRoute("voice.tts").voiceHint, "warm, calm, and lightly playful");
+  assert.equal(resolveProviderRoute("voice.tts").voiceHintMetadata.hintStyle, "instructions");
+
+  assert.throws(
+    () => saveProviderSettings({
+      "voice.tts": {
+        provider: "openai",
+        model: "tts-1",
+        voice: "coral",
+        voiceHint: "should not be accepted",
+      },
+    }),
+    /Voice hints are not supported/
+  );
+
+  saveProviderSettings({
+    "voice.tts": { provider: "openai", model: defaults["voice.tts"].model },
   });
 });
 

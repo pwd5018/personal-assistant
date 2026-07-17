@@ -293,7 +293,96 @@ Status:
 
 Validated through browser-configurable provider/model/voice routing, persisted selections, independent chat and voice providers, dynamic model inventory discovery, provider/model-specific voice catalogs, invalid-combination validation, stored routing snapshots, full backend regression coverage, and production frontend/backend builds
 
-## Milestone 12: Runtime Reliability and Operational Trust
+## Milestone 12: Low-Latency Voice Delivery and Voice Direction
+
+Goal:
+
+- Reduce the delay between a completed text reply and the beginning of spoken playback, while making supported voice-style controls configurable from the UI
+
+Deliver:
+
+- Model-specific voice-direction capability metadata exposed through the provider catalog
+- A browser Settings control for saved voice hint/direction text when the selected TTS model supports it
+- Provider-specific hint adaptation for OpenAI instructions, Gemini natural-language TTS direction, and Groq Orpheus vocal directions
+- Clear disabled/unsupported behavior for models that do not accept voice hints
+- A backend audio-stream event protocol with start, chunk, end, error, and cancellation handling
+- An ordered frontend audio queue that can begin playback before the complete spoken response is available
+- Native streaming support for Gemini 3.1 TTS where the provider supports audio chunks
+- Buffered fallback behavior for Gemini 2.5, unsupported OpenAI models, and other non-streaming routes
+- Timing telemetry for time-to-first-audio, first playback, chunk count, total synthesis time, and fallback reason
+- Regression and live local validation across hint persistence, provider/model switching, streaming, cancellation, browser playback, and fallback paths
+
+Exit criteria:
+
+- The user can configure a voice hint from the browser without editing env files
+- The saved hint is validated against the selected provider/model and is the hint actually used for synthesis
+- Supported providers apply hints without speaking the hint text aloud
+- Supported streaming models begin playback before the full TTS response completes
+- Non-streaming models continue to work through the existing complete-audio path
+- Interrupting a turn stops both provider synthesis and queued browser audio
+- Debug/history data makes the selected voice, hint capability, streaming mode, and timing path obvious
+
+Status:
+
+- Active
+
+Implementation plan:
+
+1. Establish the voice-direction contract
+   - Add model-specific TTS metadata for hint support, direction syntax, and streaming support.
+   - Add persisted voice-hint settings without mixing the hint into the selected voice/model identity.
+   - Expose the capability and effective saved value through the provider catalog and settings API.
+   - Add backend/frontend tests for persistence, model switching, unsupported models, and reset behavior.
+
+2. Ship hint-aware buffered synthesis first
+   - Pass the saved hint through the existing voice turn path as structured synthesis options.
+   - Adapt the hint per provider: OpenAI instructions, Gemini natural-language direction, and Groq Orpheus vocal directions.
+   - Keep the hint out of spoken input so it cannot be read aloud.
+   - Record the selected provider/model/voice, hint capability, whether a hint was applied, and the fallback reason in turn telemetry.
+   - Validate with mocked provider calls and one live local turn per configured provider/model family.
+
+3. Define and implement the backend audio event protocol
+   - Add explicit `audio-start`, `audio-chunk`, `audio-end`, `audio-error`, and `audio-cancelled` events with turn IDs, sequence numbers, MIME/codec metadata, and timing fields.
+   - Keep `turn-complete` as the durable text/history boundary; do not make history persistence depend on browser playback success.
+   - Ensure cancellation aborts provider synthesis and closes the event stream without converting cancellation into a successful fallback.
+   - Preserve the existing complete-audio event as the buffered compatibility path during rollout.
+
+4. Add the streaming provider seam
+   - Implement Gemini 3.1 TTS chunk handling against the provider's actual response format, with abort propagation and ordered chunk delivery.
+   - Explicitly mark Gemini 2.5, unsupported OpenAI routes, Groq routes, and any provider response that cannot safely stream as buffered.
+   - Keep provider-specific wire handling inside provider modules; the server should consume a shared async audio-stream interface.
+   - Add deterministic tests for chunk ordering, empty/error chunks, provider aborts, and buffered fallback.
+
+5. Add ordered browser playback and telemetry
+   - Replace the single-payload assumption with a per-turn ordered audio consumer that starts playback at the first safe playable boundary.
+   - Use a playback mechanism appropriate to the returned codec (MediaSource/Web Audio as required); do not assume arbitrary network chunks are independently playable files.
+   - Stop queued and currently playing audio on interrupt, ignore stale events from prior turns, and retain replay only for buffered completed audio.
+   - Surface time-to-first-audio, first playback, chunk count, synthesis duration, queue/underrun state, streaming mode, and fallback reason in Debug/History.
+
+6. Closeout and revalidate the parked reliability baseline
+   - Run backend regression tests, production builds, API checks, provider/model switching, hint persistence/reset, streaming, cancellation, browser playback, and buffered fallback checks.
+   - Re-run Phase 13 readiness/catalog/settings failure checks after the new audio protocol lands.
+   - Update README and roadmap validation notes only when live behavior matches the exit criteria.
+
+Execution order:
+
+- First implementation slice: steps 1 and 2 together, ending with a working buffered voice-direction path.
+- Second slice: step 3 with compatibility events and cancellation tests.
+- Third slice: step 4 for Gemini 3.1 only, then step 5 browser playback.
+- Final slice: step 6 and Phase 12 closeout.
+
+Progress:
+
+- Steps 1 and 2 implemented: persisted voice hints, model-specific capability metadata, provider-specific buffered adaptation, unsupported-model validation, Settings controls, and buffered hint telemetry.
+- Verified with 63 backend tests and production builds for both workspaces.
+
+Known risks:
+
+- Browser playback cannot safely consume arbitrary encoded chunks as separate `Audio` files; codec/container framing must be settled before frontend implementation.
+- Gemini streaming response details and model availability must be verified against the live provider API before treating streaming as complete.
+- Cancellation has two independent surfaces—provider generation and browser queue/playback—and both must be covered by the same turn-ID lifecycle tests.
+
+## Milestone 13: Runtime Reliability and Operational Trust
 
 Goal:
 
@@ -321,8 +410,8 @@ Exit criteria:
 
 Status:
 
-- Done
-- Validated through 58 backend tests, backend/frontend production builds, live local health/settings/catalog checks, persisted privacy settings, route telemetry, provider failure simulation, and cancellation-safe fallback verification
+- Parked until Milestone 12 is complete
+- The previously completed runtime-reliability work remains the baseline for this milestone; any remaining reliability work will be revalidated after the new audio path lands
 
 ## Working Assumptions
 

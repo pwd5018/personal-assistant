@@ -59,9 +59,22 @@ export class OpenAiProvider {
       },
       voiceMetadata: {
         speech_synthesis: {
-          sourceUrl: "https://platform.openai.com/docs/api-reference/audio/speech-audio-done-event",
-          catalogType: "documented",
-          dynamic: false,
+          "gpt-4o-mini-tts": {
+            sourceUrl: "https://platform.openai.com/docs/guides/text-to-speech",
+            catalogType: "documented",
+            dynamic: false,
+            supportsHint: true,
+            hintStyle: "instructions",
+            streaming: false,
+          },
+          "*": {
+            sourceUrl: "https://platform.openai.com/docs/guides/text-to-speech",
+            catalogType: "documented",
+            dynamic: false,
+            supportsHint: false,
+            hintStyle: "unsupported",
+            streaming: false,
+          },
         },
       },
     };
@@ -285,7 +298,7 @@ export class OpenAiProvider {
     );
   }
 
-  async synthesizeSpeech({ text, signal, model, voice }) {
+  async synthesizeSpeech({ text, signal, model, voice, voiceHint }) {
     this.assertConfigured();
     const speechInput = normalizeSpeechInput(text);
 
@@ -299,6 +312,7 @@ export class OpenAiProvider {
         voice: voice || config.ttsVoice,
         input: speechInput,
         format: "mp3",
+        ...(voiceHint?.trim() ? { instructions: voiceHint.trim() } : {}),
       },
       { signal }
     );

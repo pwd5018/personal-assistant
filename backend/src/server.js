@@ -820,12 +820,21 @@ async function runAssistantTurn({
     const speechText = spokenAnswerText || assistantText;
 
     beginRouteTelemetry(timings, "voice.tts", ttsRoute);
+    timings.routes["voice.tts"] = {
+      ...timings.routes["voice.tts"],
+      synthesisMode: "buffered",
+      hintCapability: ttsRoute.voiceHintMetadata?.supportsHint ? "supported" : "unsupported",
+      hintStyle: ttsRoute.voiceHintMetadata?.hintStyle || "unsupported",
+      hintApplied: Boolean(ttsRoute.voiceHint),
+      fallbackReason: null,
+    };
     try {
       const speech = await ttsRoute.provider.synthesizeSpeech({
         text: speechText,
         signal: abortController.signal,
         model: routing["voice.tts"]?.model,
         voice: routing["voice.tts"]?.voice,
+        voiceHint: ttsRoute.voiceHint,
       });
       finishRouteTelemetry(timings, "voice.tts", { status: "success" });
 
@@ -843,6 +852,7 @@ async function runAssistantTurn({
         stage: "tts",
         message: error.message,
       };
+      timings.routes["voice.tts"].fallbackReason = "provider_error";
       finishRouteTelemetry(timings, "voice.tts", { status: "failed", error: ttsFailure });
     }
 

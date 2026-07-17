@@ -49,6 +49,12 @@ export function buildProviderDescriptor({
   };
 }
 
+export function getVoiceSynthesisMetadata(descriptor, model) {
+  const catalog = descriptor?.voiceMetadata?.speech_synthesis || {};
+  if (Array.isArray(catalog)) return null;
+  return catalog[model] || catalog["*"] || null;
+}
+
 export function buildRoutingCatalog({ providers, routes, readiness = null }) {
   return {
     routes: Object.fromEntries(

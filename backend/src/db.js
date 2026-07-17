@@ -96,6 +96,7 @@ const ensureSummaryRow = db.prepare(`
 
 ensureSummaryRow.run();
 ensureColumn("provider_settings", "voice", "TEXT");
+ensureColumn("provider_settings", "voice_hint", "TEXT");
 ensureColumn("approved_facts", "source_turn_id", "TEXT");
 ensureColumn("approved_facts", "category", "TEXT");
 ensureColumn("candidate_facts", "category", "TEXT");

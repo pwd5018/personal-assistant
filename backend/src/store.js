@@ -68,18 +68,19 @@ const updateSummaryStatement = db.prepare(`
 `);
 
 const providerSettingsStatement = db.prepare(`
-  SELECT route, provider_id, model, voice, updated_at
+  SELECT route, provider_id, model, voice, voice_hint, updated_at
   FROM provider_settings
   ORDER BY route ASC
 `);
 
 const upsertProviderSettingStatement = db.prepare(`
-  INSERT INTO provider_settings (route, provider_id, model, voice, updated_at)
-  VALUES (@route, @provider_id, @model, @voice, @updated_at)
+  INSERT INTO provider_settings (route, provider_id, model, voice, voice_hint, updated_at)
+  VALUES (@route, @provider_id, @model, @voice, @voice_hint, @updated_at)
   ON CONFLICT(route) DO UPDATE SET
     provider_id = excluded.provider_id,
     model = excluded.model,
     voice = excluded.voice,
+    voice_hint = excluded.voice_hint,
     updated_at = excluded.updated_at
 `);
 
@@ -299,6 +300,7 @@ export const store = {
         provider_id: setting.providerId,
         model: setting.model,
         voice: setting.voice || null,
+        voice_hint: setting.voiceHint || null,
         updated_at: updatedAt,
       });
     }

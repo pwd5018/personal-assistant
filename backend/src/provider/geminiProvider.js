@@ -28,9 +28,22 @@ export class GeminiProvider {
       },
       voiceMetadata: {
         speech_synthesis: {
-          sourceUrl: "https://ai.google.dev/gemini-api/docs/speech-generation",
-          catalogType: "documented",
-          dynamic: false,
+          [config.geminiTtsModel]: {
+            sourceUrl: "https://ai.google.dev/gemini-api/docs/speech-generation",
+            catalogType: "documented",
+            dynamic: false,
+            supportsHint: true,
+            hintStyle: "natural_language_direction",
+            streaming: config.geminiTtsModel === "gemini-3.1-flash-tts-preview",
+          },
+          "gemini-2.5-flash-preview-tts": {
+            sourceUrl: "https://ai.google.dev/gemini-api/docs/speech-generation",
+            catalogType: "documented",
+            dynamic: false,
+            supportsHint: true,
+            hintStyle: "natural_language_direction",
+            streaming: false,
+          },
         },
       },
     };
@@ -60,8 +73,11 @@ export class GeminiProvider {
     return response.text;
   }
 
-  async synthesizeSpeech({ text, signal, model, voice }) {
+  async synthesizeSpeech({ text, signal, model, voice, voiceHint }) {
     if (!this.isConfigured()) throw new Error("GEMINI_API_KEY is not configured.");
+    const speechInput = voiceHint?.trim()
+      ? `Read the following text with this voice direction: ${voiceHint.trim()}\n\n${text}`
+      : text;
     const response = await fetch(
       "https://generativelanguage.googleapis.com/v1beta/interactions",
       {
@@ -72,7 +88,7 @@ export class GeminiProvider {
         },
         body: JSON.stringify({
           model: model || config.geminiTtsModel,
-          input: text,
+          input: speechInput,
           response_format: { type: "audio" },
           generation_config: {
             speech_config: [{ voice: voice || config.geminiTtsVoice }],

@@ -27,9 +27,22 @@ export class GroqProvider {
       },
       voiceMetadata: {
         speech_synthesis: {
-          sourceUrl: "https://console.groq.com/docs/text-to-speech/orpheus",
-          catalogType: "documented",
-          dynamic: false,
+          "canopylabs/orpheus-v1-english": {
+            sourceUrl: "https://console.groq.com/docs/text-to-speech/orpheus",
+            catalogType: "documented",
+            dynamic: false,
+            supportsHint: true,
+            hintStyle: "orpheus_vocal_direction",
+            streaming: false,
+          },
+          "canopylabs/orpheus-arabic-saudi": {
+            sourceUrl: "https://console.groq.com/docs/text-to-speech/orpheus",
+            catalogType: "documented",
+            dynamic: false,
+            supportsHint: true,
+            hintStyle: "orpheus_vocal_direction",
+            streaming: false,
+          },
         },
       },
     };
@@ -63,12 +76,13 @@ export class GroqProvider {
     return { text: body.text?.trim() || "", raw: body };
   }
 
-  async synthesizeSpeech({ text, signal, model, voice }) {
+  async synthesizeSpeech({ text, signal, model, voice, voiceHint }) {
     if (!this.isConfigured()) throw new Error("GROQ_API_KEY is not configured.");
+    const direction = voiceHint?.trim().replace(/[\[\]]/g, "");
     const response = await fetch("https://api.groq.com/openai/v1/audio/speech", {
       method: "POST",
       headers: { Authorization: `Bearer ${config.groqApiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: model || config.groqTtsModel, input: text, voice: voice || "autumn", response_format: "wav" }),
+      body: JSON.stringify({ model: model || config.groqTtsModel, input: direction ? `[${direction}] ${text}` : text, voice: voice || "autumn", response_format: "wav" }),
       signal,
     });
     if (!response.ok) throw new Error(`Groq speech synthesis failed with ${response.status}.`);

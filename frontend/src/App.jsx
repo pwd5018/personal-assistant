@@ -444,6 +444,14 @@ export default function App() {
       const voices = getProviderVoices(providerDescriptor, nextSelection.model);
       if (route === "voice.tts") {
         nextSelection.voice = voices[0] || "";
+        nextSelection.voiceHint = "";
+      }
+    }
+
+    if (route === "voice.tts" && (field === "model" || field === "provider")) {
+      const providerDescriptor = (providerCatalog?.providers || []).find((item) => item.id === nextSelection.provider);
+      if (!getVoiceSynthesisMetadata(providerDescriptor, nextSelection.model)?.supportsHint) {
+        nextSelection.voiceHint = "";
       }
     }
 
@@ -1612,6 +1620,20 @@ export default function App() {
                                 placeholder="Provider default voice"
                               />
                             )}
+                            <label htmlFor={`voice-hint-${route}`}>Voice direction</label>
+                            <input
+                              id={`voice-hint-${route}`}
+                              value={current.voiceHint || ""}
+                              onChange={(event) => updateProviderSetting(route, "voiceHint", event.target.value)}
+                              placeholder="e.g. warm, calm, and lightly playful"
+                              maxLength={160}
+                              disabled={!getVoiceSynthesisMetadata(selectedProvider, current.model)?.supportsHint}
+                            />
+                            <small className="card-note">
+                              {getVoiceSynthesisMetadata(selectedProvider, current.model)?.supportsHint
+                                ? "Applied as provider-specific direction; it is not spoken aloud."
+                                : "This TTS model does not support voice direction."}
+                            </small>
                           </>
                         ) : null}
                         <small className="card-note">
@@ -2587,6 +2609,12 @@ function getProviderVoices(providerDescriptor, model) {
   const catalog = providerDescriptor?.voices?.speech_synthesis || [];
   if (Array.isArray(catalog)) return catalog;
   return catalog[model] || catalog["*"] || [];
+}
+
+function getVoiceSynthesisMetadata(providerDescriptor, model) {
+  const catalog = providerDescriptor?.voiceMetadata?.speech_synthesis || {};
+  if (Array.isArray(catalog)) return null;
+  return catalog[model] || catalog["*"] || null;
 }
 
 function formatProviderRouteLabel(route) {

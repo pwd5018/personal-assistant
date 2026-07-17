@@ -1,7 +1,7 @@
 import { OpenAiProvider } from "./openaiProvider.js";
 import { GeminiProvider } from "./geminiProvider.js";
 import { GroqProvider } from "./groqProvider.js";
-import { buildProviderDescriptor, buildRoutingCatalog, assertRouteName } from "./routing.js";
+import { buildProviderDescriptor, buildRoutingCatalog, assertRouteName, getVoiceSynthesisMetadata } from "./routing.js";
 import { store } from "../store.js";
 import { config } from "../config.js";
 
@@ -94,6 +94,7 @@ export function getRoutingSelections() {
                     voice: isValidVoice(route, saved.provider_id, saved.voice, saved.model)
                       ? saved.voice
                       : getDefaultVoice(saved.provider_id, saved.model) || selection.voice || null,
+                    voiceHint: normalizeVoiceHint(saved.voice_hint, saved.provider_id, saved.model),
                   }
                 : {}),
               updatedAt: saved.updated_at,
@@ -119,6 +120,7 @@ export function validateProviderSettings(input) {
     const providerId = String(selection.provider || "").trim();
     const model = String(selection.model || "").trim();
     const voice = selection.voice == null ? null : String(selection.voice).trim();
+    const voiceHint = selection.voiceHint == null ? "" : String(selection.voiceHint).trim();
     if (!providerId || !model) {
       throw new Error(`Provider and model are required for route ${route}.`);
     }
@@ -131,11 +133,19 @@ export function validateProviderSettings(input) {
       throw new Error(`Voice ${voice} is not supported for route ${route}.`);
     }
 
+    if (route === "voice.tts" && voiceHint && !getVoiceSynthesisMetadataForSelection(providerId, model)?.supportsHint) {
+      throw new Error(`Voice hints are not supported for ${providerId} model ${model}.`);
+    }
+    if (route === "voice.tts" && voiceHint.length > 160) {
+      throw new Error("Voice hints must be 160 characters or fewer.");
+    }
+
     normalized.push({
       route,
       providerId,
       model,
       voice: route === "voice.tts" ? voice || getDefaultVoice(providerId, model) || null : null,
+      voiceHint: route === "voice.tts" ? voiceHint || null : null,
     });
   }
 
@@ -175,7 +185,20 @@ export function resolveProviderRoute(route) {
     capability: selection.capability,
     model: selection.model || null,
     voice: selection.voice || null,
+    voiceHint: normalizeVoiceHint(selection.voiceHint, selection.provider, selection.model),
+    voiceHintMetadata: getVoiceSynthesisMetadataForSelection(selection.provider, selection.model),
   };
+}
+
+function getVoiceSynthesisMetadataForSelection(providerId, model) {
+  const selectedProvider = providerRegistry.get(providerId);
+  return getVoiceSynthesisMetadata(selectedProvider?.getDescriptor(), model);
+}
+
+function normalizeVoiceHint(value, providerId, model) {
+  const hint = String(value || "").trim();
+  if (!hint || !getVoiceSynthesisMetadataForSelection(providerId, model)?.supportsHint) return null;
+  return hint;
 }
 
 function isValidVoice(route, providerId, voice, model) {

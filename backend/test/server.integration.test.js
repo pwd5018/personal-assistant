@@ -209,6 +209,62 @@ test("retry applies saved chat and TTS models and stores the routing snapshot", 
   }
 });
 
+test("retry passes the saved voice direction to buffered TTS and records its application", async () => {
+  const defaults = getRoutingDefaults();
+  const observed = { hint: null };
+  saveProviderSettings({
+    "voice.tts": {
+      provider: "openai",
+      model: "gpt-4o-mini-tts",
+      voice: "coral",
+      voiceHint: "gentle, warm, and concise",
+    },
+  });
+
+  provider.isConfigured = () => true;
+  provider.classifyExternalLookupNeed = async () => ({
+    needed: false,
+    questionKind: "general_chat",
+    answerMode: "model_only",
+    needsResolution: false,
+    canUseLocalMemoryForResolution: false,
+    reason: "test",
+    matchedSignals: [],
+    confidence: 0.95,
+  });
+  provider.streamChat = async ({ onDelta }) => {
+    onDelta("Hinted reply.");
+    return { usage: { total_tokens: 1 } };
+  };
+  provider.synthesizeSpeech = async ({ voiceHint, text }) => {
+    observed.hint = voiceHint;
+    return { audioBuffer: Buffer.from("audio"), mimeType: "audio/mpeg", speechInput: text };
+  };
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/voice/retry",
+      payload: {
+        sessionId: "voice-hint-session",
+        turnId: `voice-hint-${randomUUID()}`,
+        transcriptText: "Say a hinted reply.",
+      },
+    });
+
+    assert.equal(response.statusCode, 200);
+    const turn = extractTurnComplete(response.body);
+    assert.equal(observed.hint, "gentle, warm, and concise");
+    assert.equal(turn.timings.routes["voice.tts"].synthesisMode, "buffered");
+    assert.equal(turn.timings.routes["voice.tts"].hintApplied, true);
+    assert.equal(turn.timings.routes["voice.tts"].hintCapability, "supported");
+  } finally {
+    saveProviderSettings({
+      "voice.tts": { provider: "openai", model: defaults["voice.tts"].model },
+    });
+  }
+});
+
 test("debug turn endpoint returns parsed provider metadata", async () => {
   const turnId = `test-turn-${randomUUID()}`;
 
