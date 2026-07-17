@@ -83,6 +83,20 @@ const upsertProviderSettingStatement = db.prepare(`
     updated_at = excluded.updated_at
 `);
 
+const appSettingStatement = db.prepare(`
+  SELECT key, value, updated_at
+  FROM app_settings
+  WHERE key = ?
+`);
+
+const upsertAppSettingStatement = db.prepare(`
+  INSERT INTO app_settings (key, value, updated_at)
+  VALUES (?, ?, ?)
+  ON CONFLICT(key) DO UPDATE SET
+    value = excluded.value,
+    updated_at = excluded.updated_at
+`);
+
 const approvedFactsStatement = db.prepare(`
   SELECT id, fact_text, source_turn_id, category, created_at
   FROM approved_facts
@@ -290,6 +304,30 @@ export const store = {
     }
 
     return this.getProviderSettings();
+  },
+
+  deleteProviderSettings(routes = []) {
+    const normalizedRoutes = Array.isArray(routes) ? routes.filter(Boolean) : [];
+    if (!normalizedRoutes.length) {
+      db.prepare("DELETE FROM provider_settings").run();
+      return this.getProviderSettings();
+    }
+
+    const deleteStatement = db.prepare("DELETE FROM provider_settings WHERE route = ?");
+    for (const route of normalizedRoutes) {
+      deleteStatement.run(route);
+    }
+
+    return this.getProviderSettings();
+  },
+
+  getAppSetting(key) {
+    return appSettingStatement.get(key) || null;
+  },
+
+  upsertAppSetting(key, value) {
+    upsertAppSettingStatement.run(key, String(value), new Date().toISOString());
+    return this.getAppSetting(key);
   },
 
   getApprovedFacts() {

@@ -46,6 +46,8 @@ export const config = {
   externalLookupSearchContextSize: normalizeSearchContextSize(
     process.env.EXTERNAL_LOOKUP_SEARCH_CONTEXT_SIZE || "medium"
   ),
+  modelCatalogTimeoutMs: Number(process.env.MODEL_CATALOG_TIMEOUT_MS || 5000),
+  modelCatalogTtlMs: Number(process.env.MODEL_CATALOG_TTL_MS || 300000),
   systemPrompt:
     process.env.SYSTEM_PROMPT ||
     [

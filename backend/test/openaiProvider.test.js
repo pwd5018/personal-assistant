@@ -8,7 +8,39 @@ const {
   reconcileLookupEvidence,
   determineLookupAnswerStatus,
   buildLookupAnswerFallback,
+  isDeclarativeLookupStatement,
 } = __testables;
+
+test("declarative current-context statements do not require lookup clarification", () => {
+  const question = "No golf today, it's too hot out and there's actually a lot of smoke coming in from Canada, from fires, so the air quality is not very good.";
+  assert.equal(isDeclarativeLookupStatement(question, "other"), true);
+
+  const answerStatus = determineLookupAnswerStatus({
+    question,
+    lookupPlan: { questionKind: "other", resolutionStatus: "ambiguous" },
+    evidence: { evidenceStatus: "strong", supportsDirectAnswer: true },
+    extraction: { answerExtractability: "direct_answer", resultTopicMatch: "high" },
+    compactedText: "Smoke from Canadian wildfires is affecting air quality across Pennsylvania.",
+  });
+
+  assert.equal(answerStatus, "answered");
+});
+
+test("declarative smoke statements receive an acknowledgement fallback", () => {
+  const fallback = buildLookupAnswerFallback({
+    question: "No golf today, it's too hot out and there's actually a lot of smoke coming in from Canada, from fires, so the air quality is not very good.",
+    lookupPlan: { questionKind: "other", resolutionStatus: "ambiguous" },
+    compactedText: "Smoke from Canadian wildfires is affecting air quality across Pennsylvania.",
+    citations: [],
+    webSearches: [],
+    answerStatus: "needs_clarification",
+    evidence: { evidenceStatus: "strong", supportsDirectAnswer: true },
+    extraction: { answerExtractability: "direct_answer", resultTopicMatch: "high" },
+  });
+
+  assert.match(fallback.displayAnswer, /staying off the course/i);
+  assert.doesNotMatch(fallback.displayAnswer, /more detail/i);
+});
 
 test("question-derived lookup candidates are suppressed", () => {
   const facts = finalizeCandidateFacts(

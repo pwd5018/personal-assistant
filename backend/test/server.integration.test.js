@@ -68,6 +68,72 @@ test("provider settings endpoint returns the routing catalog", async () => {
   assert.ok(body.providerCatalog.routes.chat.model);
 });
 
+test("health exposes route-level provider readiness", async () => {
+  const response = await app.inject({ method: "GET", url: "/api/health" });
+
+  assert.equal(response.statusCode, 200);
+  const body = response.json();
+  assert.equal(typeof body.routesReady, "number");
+  assert.ok(body.providerCatalog.readiness.routes.chat);
+  assert.equal(
+    body.providerCatalog.readiness.routes.chat.usable,
+    Boolean(body.providerCatalog.readiness.providers[body.providerCatalog.routes.chat.provider]?.configured)
+  );
+});
+
+test("lookup privacy mode persists through the settings API", async () => {
+  const saveResponse = await app.inject({
+    method: "PATCH",
+    url: "/api/settings/privacy",
+    payload: { lookupPrivacyMode: "balanced" },
+  });
+  assert.equal(saveResponse.statusCode, 200);
+  assert.equal(saveResponse.json().lookupPrivacyMode, "balanced");
+
+  const readResponse = await app.inject({ method: "GET", url: "/api/settings/privacy" });
+  assert.equal(readResponse.statusCode, 200);
+  assert.equal(readResponse.json().lookupPrivacyMode, "balanced");
+
+  const invalidResponse = await app.inject({
+    method: "PATCH",
+    url: "/api/settings/privacy",
+    payload: { lookupPrivacyMode: "unsafe" },
+  });
+  assert.equal(invalidResponse.statusCode, 400);
+  assert.match(invalidResponse.json().error, /strict or balanced/);
+
+  await app.inject({
+    method: "PATCH",
+    url: "/api/settings/privacy",
+    payload: { lookupPrivacyMode: "strict" },
+  });
+});
+
+test("provider settings can reset one route without clearing the others", async () => {
+  const defaults = getRoutingDefaults();
+  saveProviderSettings({
+    chat: { provider: "openai", model: "temporary-chat-model" },
+    summary: { provider: "openai", model: "temporary-summary-model" },
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/settings/providers/reset",
+      payload: { routes: ["chat"] },
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().routes.chat.model, defaults.chat.model);
+    assert.equal(response.json().routes.summary.model, "temporary-summary-model");
+  } finally {
+    saveProviderSettings({
+      chat: { provider: "openai", model: defaults.chat.model },
+      summary: { provider: "openai", model: defaults.summary.model },
+    });
+  }
+});
+
 test("provider settings endpoint validates unsupported selections", async () => {
   const response = await app.inject({
     method: "PATCH",
@@ -131,6 +197,10 @@ test("retry applies saved chat and TTS models and stores the routing snapshot", 
     assert.equal(observed.ttsVoice, "coral");
     assert.equal(turn.provider.routes.chat.model, "test-chat-route-model");
     assert.equal(turn.provider.routes["voice.tts"].model, "test-tts-route-model");
+    assert.equal(turn.timings.routes.chat.status, "success");
+    assert.equal(turn.timings.routes["voice.tts"].status, "success");
+    assert.ok(Number.isInteger(turn.timings.routes.chat.durationMs));
+    assert.ok(turn.provider.telemetry.routes.chat);
   } finally {
     saveProviderSettings({
       chat: { provider: "openai", model: defaults.chat.model },
@@ -489,14 +559,94 @@ test("retry endpoint reuses cached lookup retrieval artifacts on repeated curren
   assert.equal(secondTurn.provider.lookup.retrievalSource, "cache");
 });
 
+test("chat provider failure is stored as a chat failure instead of a generic server error", async () => {
+  const turnId = `chat-failure-${randomUUID()}`;
+  provider.isConfigured = () => true;
+  provider.classifyExternalLookupNeed = async () => ({
+    needed: false,
+    questionKind: "general_chat",
+    answerMode: "model_only",
+    needsResolution: false,
+    canUseLocalMemoryForResolution: false,
+    reason: "test",
+    matchedSignals: [],
+    confidence: 0.95,
+  });
+  provider.streamChat = async () => {
+    throw new Error("Chat provider temporarily unavailable.");
+  };
+  provider.synthesizeSpeech = async () => {
+    throw new Error("TTS should not run after chat failure.");
+  };
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/voice/retry",
+    payload: {
+      sessionId: "chat-failure-session",
+      turnId,
+      transcriptText: "Say something.",
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  const events = parseEvents(response.body);
+  assert.equal(events.find((event) => event.type === "error")?.stage, "chat");
+  const storedTurn = store.getTurnById(turnId);
+  assert.equal(storedTurn.turn_status, "chat_failed");
+  assert.equal(storedTurn.failure_json.stage, "chat");
+  assert.equal(storedTurn.failure_json.message, "Chat provider temporarily unavailable.");
+});
+
+test("TTS cancellation is not converted into a successful text-only fallback", async () => {
+  provider.isConfigured = () => true;
+  provider.classifyExternalLookupNeed = async () => ({
+    needed: false,
+    questionKind: "general_chat",
+    answerMode: "model_only",
+    needsResolution: false,
+    canUseLocalMemoryForResolution: false,
+    reason: "test",
+    matchedSignals: [],
+    confidence: 0.95,
+  });
+  provider.streamChat = async ({ onDelta }) => {
+    onDelta("A reply.");
+    return { usage: { total_tokens: 1 } };
+  };
+  provider.synthesizeSpeech = async () => {
+    const error = new Error("aborted");
+    error.name = "AbortError";
+    throw error;
+  };
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/voice/retry",
+    payload: {
+      sessionId: "tts-cancel-session",
+      turnId: `tts-cancel-${randomUUID()}`,
+      transcriptText: "Say something.",
+    },
+  });
+
+  assert.equal(response.statusCode, 200);
+  const events = parseEvents(response.body);
+  assert.equal(events.find((event) => event.type === "error")?.stage, "cancelled");
+  assert.equal(events.some((event) => event.type === "turn-complete"), false);
+});
+
 function extractTurnComplete(body) {
-  const lines = String(body || "")
+  const events = parseEvents(body);
+  const turnComplete = events.find((event) => event.type === "turn-complete");
+  assert.ok(turnComplete, "expected turn-complete event");
+  return turnComplete.turn;
+}
+
+function parseEvents(body) {
+  return String(body || "")
     .trim()
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line));
-
-  const turnComplete = lines.find((event) => event.type === "turn-complete");
-  assert.ok(turnComplete, "expected turn-complete event");
-  return turnComplete.turn;
 }

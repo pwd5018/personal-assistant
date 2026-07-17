@@ -2,8 +2,8 @@
 
 Small voice-first local desktop web app with:
 
-- `frontend/`: React + Vite voice UI and debug/history surface
-- `backend/`: Fastify orchestration server, local SQLite persistence, and OpenAI adapter
+- `frontend/`: React + Vite voice UI, settings, memories, and debug/history surfaces
+- `backend/`: Fastify orchestration server, local SQLite persistence, and shared OpenAI/Gemini/Groq provider routing
 
 Project roadmap:
 
@@ -75,11 +75,16 @@ http://127.0.0.1:8787/api/health
 - `POST /api/voice/cancel`: cancel active stream/playback for the session
 - `GET /api/debug/turns`: recent turn history, rolling summary, approved facts
 - `GET /api/debug/turns/:id`: full detail for a single stored turn
+- `GET/PATCH /api/settings/privacy`: persisted strict/balanced external lookup privacy mode
 
 ## Notes
 
 - The frontend only talks to the local backend.
 - Raw transcript history stays local in `backend/data/assistant.sqlite`.
+- Provider API keys stay in `backend/.env`; provider/model routing is configured from the browser Settings surface.
+- Model inventory discovery is cached and timeout-bounded. A provider inventory outage does not prevent the rest of the app from loading.
+- Route failures are recorded with their provider stage: lookup can fall back to chat, TTS preserves a successful text reply, and STT/chat failures remain visible in local history. Cancellation is kept separate from normal fallback.
+- Stored turn telemetry includes per-route provider/model, status, duration, usage, cache, and failure metadata when available.
 - Current-information lookup is now routed through the local backend when the question looks time-sensitive; the backend uses privacy-first query construction and can fall back to model-only replies if lookup fails.
 - If `OPENAI_API_KEY` is missing, `/api/health` still works but live voice turns will fail with an operational error.
 - `node:sqlite` is used to avoid native build tooling on this machine; Node currently prints an experimental warning for it at startup.

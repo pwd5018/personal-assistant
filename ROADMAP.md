@@ -293,6 +293,37 @@ Status:
 
 Validated through browser-configurable provider/model/voice routing, persisted selections, independent chat and voice providers, dynamic model inventory discovery, provider/model-specific voice catalogs, invalid-combination validation, stored routing snapshots, full backend regression coverage, and production frontend/backend builds
 
+## Milestone 12: Runtime Reliability and Operational Trust
+
+Goal:
+
+- Make provider routing, model discovery, and settings dependable during normal use and temporary provider outages
+
+Deliver:
+
+- Route-level readiness based on the selected provider and capability, rather than a single provider-wide flag
+- Timeout-bounded and cached model inventory discovery with explicit live, cached, fallback, and unavailable states
+- Settings refresh, per-route reset, and reset-all controls
+- Frontend failure isolation so optional model inventory failures do not hide history, memory, or self-knowledge state
+- Clear provider availability and route-readiness indicators in the Settings surface
+- Route-specific fallback policy for lookup, STT, chat, TTS, and cancellation paths
+- Persisted strict/balanced lookup privacy settings with browser controls
+- Route-level telemetry for provider/model, status, duration, usage, cache, and failure details
+- Regression and live local API validation for readiness, settings persistence, catalog loading, provider failures, and cancellation
+
+Exit criteria:
+
+- The app remains usable when a provider catalog endpoint is slow or unavailable
+- Health reports which selected routes are ready
+- Model inventory can be refreshed without restarting the backend
+- Saved provider settings can be reset per route or globally
+- Settings and supporting docs accurately describe provider configuration and failure states
+
+Status:
+
+- Done
+- Validated through 58 backend tests, backend/frontend production builds, live local health/settings/catalog checks, persisted privacy settings, route telemetry, provider failure simulation, and cancellation-safe fallback verification
+
 ## Working Assumptions
 
 - Milestones stay sequential rather than parallel

@@ -18,12 +18,47 @@ export const providerRegistry = new Map([
 export const provider = openAiProvider;
 
 export function getProviderCatalog() {
+  const providers = [...providerRegistry.values()].map((item) =>
+    buildProviderDescriptor(item.getDescriptor())
+  );
   return buildRoutingCatalog({
-    providers: [...providerRegistry.values()].map((item) =>
-      buildProviderDescriptor(item.getDescriptor())
-    ),
+    providers,
     routes: getRoutingSelections(),
+    readiness: getProviderReadiness({ providers }),
   });
+}
+
+export function getProviderReadiness({ providers = null } = {}) {
+  const descriptors = providers || [...providerRegistry.values()].map((item) =>
+    buildProviderDescriptor(item.getDescriptor())
+  );
+  const selections = getRoutingSelections();
+  const providerStates = Object.fromEntries(
+    descriptors.map((descriptor) => [descriptor.id, {
+      id: descriptor.id,
+      label: descriptor.label,
+      configured: descriptor.configured,
+      capabilities: [...descriptor.capabilities],
+      status: descriptor.configured ? "configured" : "missing_key",
+    }])
+  );
+  const routes = Object.fromEntries(
+    Object.entries(selections).map(([route, selection]) => {
+      const providerState = providerStates[selection.provider];
+      const configured = Boolean(providerState?.configured);
+      return [route, {
+        route,
+        capability: selection.capability,
+        provider: selection.provider,
+        model: selection.model,
+        configured,
+        usable: configured,
+        status: configured ? "ready" : "provider_missing_key",
+      }];
+    })
+  );
+
+  return { providers: providerStates, routes };
 }
 
 export function getRoutingDefaults() {
@@ -54,9 +89,13 @@ export function getRoutingSelections() {
               provider: saved.provider_id,
               capability: selection.capability,
               model: saved.model,
-              voice: isValidVoice(route, saved.provider_id, saved.voice, saved.model)
-                ? saved.voice
-                : getDefaultVoice(saved.provider_id, saved.model) || selection.voice || null,
+              ...(route === "voice.tts"
+                ? {
+                    voice: isValidVoice(route, saved.provider_id, saved.voice, saved.model)
+                      ? saved.voice
+                      : getDefaultVoice(saved.provider_id, saved.model) || selection.voice || null,
+                  }
+                : {}),
               updatedAt: saved.updated_at,
             }
         : selection,
@@ -88,11 +127,16 @@ export function validateProviderSettings(input) {
       throw new Error(`Provider ${providerId} does not support route ${route}.`);
     }
 
-    if (voice && !isValidVoice(route, providerId, voice, model)) {
+    if (route === "voice.tts" && voice && !isValidVoice(route, providerId, voice, model)) {
       throw new Error(`Voice ${voice} is not supported for route ${route}.`);
     }
 
-    normalized.push({ route, providerId, model, voice: voice || getDefaultVoice(providerId, model) || null });
+    normalized.push({
+      route,
+      providerId,
+      model,
+      voice: route === "voice.tts" ? voice || getDefaultVoice(providerId, model) || null : null,
+    });
   }
 
   return normalized;
@@ -101,6 +145,13 @@ export function validateProviderSettings(input) {
 export function saveProviderSettings(input) {
   const normalized = validateProviderSettings(input);
   store.upsertProviderSettings(normalized);
+  return getRoutingSelections();
+}
+
+export function resetProviderSettings(routes = []) {
+  const normalizedRoutes = Array.isArray(routes) ? routes : [];
+  normalizedRoutes.forEach(assertRouteName);
+  store.deleteProviderSettings(normalizedRoutes);
   return getRoutingSelections();
 }
 

@@ -51,6 +51,15 @@ test("provider route settings persist and affect route resolution", () => {
   });
 });
 
+test("non-TTS route settings ignore stray voice fields", () => {
+  const updated = saveProviderSettings({
+    chat: { provider: "openai", model: getRoutingDefaults().chat.model, voice: "marin" },
+  });
+
+  assert.equal(updated.chat.voice, undefined);
+  assert.equal(resolveProviderRoute("chat").voice, null);
+});
+
 test("unsupported provider selections are rejected", () => {
   assert.throws(
     () => saveProviderSettings({ summary: { provider: "groq", model: "groq-test" } }),

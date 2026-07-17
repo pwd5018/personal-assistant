@@ -221,6 +221,7 @@ export default function App() {
   });
   const [providerCatalog, setProviderCatalog] = useState(null);
   const [modelCatalog, setModelCatalog] = useState(null);
+  const [modelCatalogState, setModelCatalogState] = useState({ loading: false, error: "", source: "" });
   const [providerSettingsDraft, setProviderSettingsDraft] = useState({});
   const [providerSettingsState, setProviderSettingsState] = useState({
     saving: false,
@@ -277,13 +278,19 @@ export default function App() {
 
   async function loadDebugState() {
     try {
-      const [healthResponse, debugResponse, memoryResponse, selfKnowledgeResponse, modelCatalogResponse] = await Promise.all([
+      const responses = await Promise.allSettled([
         fetch(`${API_BASE}/api/health`),
         fetch(`${API_BASE}/api/debug/turns`),
         fetch(`${API_BASE}/api/memory`),
         fetch(`${API_BASE}/api/debug/self-knowledge`),
         fetch(`${API_BASE}/api/providers/catalog`),
+        fetch(`${API_BASE}/api/settings/privacy`),
       ]);
+      const [healthResult, debugResult, memoryResult, selfKnowledgeResult, modelCatalogResult, privacyResult] = responses;
+      const healthResponse = getFulfilledResponse(healthResult, "Health");
+      const debugResponse = getFulfilledResponse(debugResult, "Debug");
+      const memoryResponse = getFulfilledResponse(memoryResult, "Memory");
+      const selfKnowledgeResponse = getFulfilledResponse(selfKnowledgeResult, "Self-knowledge");
       if (!healthResponse.ok) {
         throw new Error(`Health fetch failed with ${healthResponse.status}.`);
       }
@@ -296,23 +303,31 @@ export default function App() {
       if (!selfKnowledgeResponse.ok) {
         throw new Error(`Self-knowledge fetch failed with ${selfKnowledgeResponse.status}.`);
       }
-      if (!modelCatalogResponse.ok) {
-        throw new Error(`Model catalog fetch failed with ${modelCatalogResponse.status}.`);
-      }
 
       const healthData = await healthResponse.json();
       const debugData = await debugResponse.json();
       const memoryData = await memoryResponse.json();
       const selfKnowledgeData = await selfKnowledgeResponse.json();
-      const modelCatalogData = await modelCatalogResponse.json();
       const nextHistory = debugData.turns || [];
       setAppStatus({
         backendReachable: Boolean(healthData.ok),
-        providerConfigured: Boolean((healthData.providerCatalog?.providers || []).some((item) => item.configured)),
+        providerConfigured: Boolean(healthData.providerConfigured),
+        routesReady: Number(healthData.routesReady || 0),
         checkedAt: new Date().toISOString(),
       });
       setProviderCatalog(healthData.providerCatalog || null);
-      setModelCatalog(modelCatalogData || null);
+      if (modelCatalogResult.status === "fulfilled" && modelCatalogResult.value.ok) {
+        setModelCatalog(await modelCatalogResult.value.json());
+        setModelCatalogState({ loading: false, error: "", source: "loaded" });
+      } else {
+        setModelCatalogState({ loading: false, error: "Model inventory is temporarily unavailable.", source: "unavailable" });
+      }
+      if (privacyResult.status === "fulfilled" && privacyResult.value.ok) {
+        const privacyData = await privacyResult.value.json();
+        if (privacyData.lookupPrivacyMode === "strict" || privacyData.lookupPrivacyMode === "balanced") {
+          setLookupPrivacyMode(privacyData.lookupPrivacyMode);
+        }
+      }
       setHistory(nextHistory);
       setRollingSummary(debugData.rollingSummary || { summary_text: "", updated_at: "" });
       setCandidateFacts(memoryData.candidateFacts || []);
@@ -325,6 +340,7 @@ export default function App() {
       setAppStatus({
         backendReachable: false,
         providerConfigured: false,
+        routesReady: 0,
         checkedAt: new Date().toISOString(),
       });
       dispatch({
@@ -335,6 +351,37 @@ export default function App() {
           message: error.message,
         }),
       });
+    }
+  }
+
+  async function refreshModelCatalog() {
+    setModelCatalogState({ loading: true, error: "", source: "refreshing" });
+    try {
+      const response = await fetch(`${API_BASE}/api/providers/catalog?refresh=1`);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `Model inventory refresh failed with ${response.status}.`);
+      setModelCatalog(data);
+      setModelCatalogState({ loading: false, error: "", source: data.catalogState || "live" });
+    } catch (error) {
+      setModelCatalogState({ loading: false, error: error.message, source: "unavailable" });
+    }
+  }
+
+  async function updateLookupPrivacyMode(value) {
+    if (value !== "strict" && value !== "balanced") return;
+    setLookupPrivacyMode(value);
+    try {
+      const response = await fetch(`${API_BASE}/api/settings/privacy`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lookupPrivacyMode: value }),
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || `Privacy setting save failed with ${response.status}.`);
+      }
+    } catch (error) {
+      setProviderSettingsState((current) => ({ ...current, error: error.message }));
     }
   }
 
@@ -351,6 +398,24 @@ export default function App() {
         throw new Error(data.error || `Provider settings save failed with ${response.status}.`);
       }
 
+      setProviderCatalog(data.providerCatalog || null);
+      setProviderSettingsDraft({});
+      setProviderSettingsState({ saving: false, error: "", saved: true });
+    } catch (error) {
+      setProviderSettingsState({ saving: false, error: error.message, saved: false });
+    }
+  }
+
+  async function resetProviderSettings(routes = null) {
+    setProviderSettingsState({ saving: true, error: "", saved: false });
+    try {
+      const response = await fetch(`${API_BASE}/api/settings/providers/reset`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(routes ? { routes } : {}),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `Provider settings reset failed with ${response.status}.`);
       setProviderCatalog(data.providerCatalog || null);
       setProviderSettingsDraft({});
       setProviderSettingsState({ saving: false, error: "", saved: true });
@@ -1125,14 +1190,14 @@ export default function App() {
                 <div className="privacy-mode-control">
                   <button
                     className={`secondary ${lookupPrivacyMode === "strict" ? "active-choice" : ""}`}
-                    onClick={() => setLookupPrivacyMode("strict")}
+                    onClick={() => updateLookupPrivacyMode("strict")}
                     type="button"
                   >
                     Strict
                   </button>
                   <button
                     className={`secondary ${lookupPrivacyMode === "balanced" ? "active-choice" : ""}`}
-                    onClick={() => setLookupPrivacyMode("balanced")}
+                    onClick={() => updateLookupPrivacyMode("balanced")}
                     type="button"
                   >
                     Balanced
@@ -1432,6 +1497,11 @@ export default function App() {
                   <strong>{getConfiguredProviderSummary(providerCatalog)}</strong>
                   <small>Keys stay in backend/.env</small>
                 </div>
+                <div className="metric-card">
+                  <span>Routes ready</span>
+                  <strong>{appStatus.routesReady || 0}</strong>
+                  <small>Selected routes with configured providers</small>
+                </div>
               </div>
             </div>
 
@@ -1440,6 +1510,26 @@ export default function App() {
                 <div className="debug-card settings-note-card">
                   <label>How this works</label>
                   <p>These choices are saved locally and applied to the next operation. API keys are never exposed to the browser.</p>
+                </div>
+                <div className="debug-card settings-note-card">
+                  <label>External lookup privacy</label>
+                  <p>Strict sends only the privacy-safe question. Balanced may use minimal approved context when needed to resolve the question. This choice is saved locally.</p>
+                  <div className="privacy-mode-control">
+                    <button
+                      className={`secondary ${lookupPrivacyMode === "strict" ? "active-choice" : ""}`}
+                      onClick={() => updateLookupPrivacyMode("strict")}
+                      type="button"
+                    >
+                      Strict
+                    </button>
+                    <button
+                      className={`secondary ${lookupPrivacyMode === "balanced" ? "active-choice" : ""}`}
+                      onClick={() => updateLookupPrivacyMode("balanced")}
+                      type="button"
+                    >
+                      Balanced
+                    </button>
+                  </div>
                 </div>
                 <div className="settings-route-grid">
                   {Object.entries(providerCatalog.routes || {}).map(([route, routeSetting]) => {
@@ -1531,6 +1621,13 @@ export default function App() {
                               ? `Pricing is maintained on the provider page: ${catalogProvider?.pricingSourceUrl || "not available"}`
                             : "Configure this provider key in backend/.env before using it."}
                         </small>
+                        <button
+                          className="text-button"
+                          onClick={() => resetProviderSettings([route])}
+                          disabled={providerSettingsState.saving}
+                        >
+                          Reset this route
+                        </button>
                       </div>
                     );
                   })}
@@ -1539,6 +1636,16 @@ export default function App() {
                   <div className="section-heading">
                     <h3>Available model inventory</h3>
                     <p>Models are discovered from configured provider APIs. Pricing is an estimate or reference link, not a billing statement.</p>
+                    <div className="settings-actions">
+                      <button className="secondary" onClick={refreshModelCatalog} disabled={modelCatalogState.loading}>
+                        {modelCatalogState.loading ? "Refreshing inventory..." : "Refresh inventory"}
+                      </button>
+                      <button className="secondary" onClick={() => resetProviderSettings()} disabled={providerSettingsState.saving}>
+                        Reset all routes
+                      </button>
+                      {modelCatalogState.source ? <span className="status-pill">{formatCatalogState(modelCatalogState.source)}</span> : null}
+                      {modelCatalogState.error ? <span className="status-pill lookup-fallback">{modelCatalogState.error}</span> : null}
+                    </div>
                   </div>
                   <div className="model-inventory-grid">
                     {(modelCatalog?.providers || []).map((catalogProvider) => (
@@ -1657,7 +1764,7 @@ export default function App() {
                   {selfKnowledgeState.latestTurnExplanation ? (
                     <>
                       <p>{selfKnowledgeState.latestTurnExplanation.summary}</p>
-                      <small className="card-note">
+                        <small className="card-note">
                         Latest stored turn {formatTurnSource(selfKnowledgeState.latestTurnExplanation.latestTurnId)}
                         {selfKnowledgeState.latestTurnExplanation.answerMode
                           ? ` â€¢ ${formatCategoryLabel(selfKnowledgeState.latestTurnExplanation.answerMode)}`
@@ -2031,6 +2138,7 @@ export default function App() {
                     <p><strong>User:</strong> {turn.transcript_text || "(empty)"}</p>
                     <p><strong>Assistant:</strong> {turn.assistant_text || "(none)"}</p>
                     <p><strong>Lookup:</strong> {describeStoredTurnLookup(turn)}</p>
+                    <p><strong>Routes:</strong> {describeStoredTurnTelemetry(turn)}</p>
                     {describeStoredTurnSelfKnowledge(turn) ? (
                       <p><strong>Self-knowledge:</strong> {describeStoredTurnSelfKnowledge(turn)}</p>
                     ) : null}
@@ -2461,6 +2569,20 @@ function getConfiguredProviderSummary(providerCatalog) {
   return providers.length ? `${configuredCount} of ${providers.length} configured` : "Unavailable";
 }
 
+function getFulfilledResponse(result, label) {
+  if (result.status !== "fulfilled") {
+    throw new Error(`${label} request failed: ${result.reason?.message || "connection unavailable"}.`);
+  }
+
+  return result.value;
+}
+
+function formatCatalogState(value) {
+  return String(value || "")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 function getProviderVoices(providerDescriptor, model) {
   const catalog = providerDescriptor?.voices?.speech_synthesis || [];
   if (Array.isArray(catalog)) return catalog;
@@ -2639,6 +2761,19 @@ function describeStoredTurnLookup(turn) {
   }
 
   return "Model-only";
+}
+
+function describeStoredTurnTelemetry(turn) {
+  const telemetry = parseStoredJson(turn.provider_json)?.telemetry?.routes;
+  if (!telemetry || typeof telemetry !== "object") return "No route telemetry recorded";
+
+  const summaries = Object.entries(telemetry)
+    .filter(([, route]) => route)
+    .map(([route, data]) => {
+      const duration = data.durationMs != null ? ` ${data.durationMs}ms` : "";
+      return `${formatProviderRouteLabel(route)}: ${data.status || "unknown"}${duration}`;
+    });
+  return summaries.length ? summaries.join(" · ") : "No route telemetry recorded";
 }
 
 function describeStoredTurnSelfKnowledge(turn) {

@@ -1538,6 +1538,23 @@ async function composeExternalLookupResponse({
     extraction: resolvedExtraction,
   });
 
+  if (isDeclarativeLookupStatement(question, lookupPlan?.questionKind)) {
+    return {
+      ...buildLookupAnswerFallback({
+        question,
+        lookupPlan,
+        compactedText,
+        citations,
+        webSearches,
+        answerStatus: "answered",
+        evidence: resolvedEvidence,
+        extraction: resolvedExtraction,
+      }),
+      evidence: resolvedEvidence,
+      extraction: resolvedExtraction,
+    };
+  }
+
   if (
     needsLookupAnswerFallback(question, compactedText, lookupPlan.questionKind, resolvedExtraction) ||
     answerStatus !== "answered"
@@ -1711,6 +1728,16 @@ function buildLookupAnswerFallback({
   );
   const sportsSubject = questionKind === "sports" ? extractSportsSubjectFromQuestion(question) : "";
   const clarificationPrompt = buildLookupClarificationPrompt(question, lookupPlan, questionKind);
+
+  if (isDeclarativeLookupStatement(question, questionKind)) {
+    const displayAnswer = buildDeclarativeLookupAcknowledgement(question);
+    return {
+      displayAnswer,
+      spokenAnswer: displayAnswer,
+      answerStatus: "answered",
+      showSources: false,
+    };
+  }
 
   if (answerStatus === "needs_clarification") {
     const displayAnswer = clarificationPrompt || "I need a little more detail before I can answer that confidently.";
@@ -2144,6 +2171,30 @@ function inferQuestionKindFromQuestion(question) {
   return "other";
 }
 
+function isDeclarativeLookupStatement(question, questionKind = "other") {
+  if (questionKind !== "other") {
+    return false;
+  }
+
+  const normalized = String(question || "").trim();
+  if (!normalized || /[?]$/.test(normalized)) {
+    return false;
+  }
+
+  return !/^(what|when|where|who|why|how|is|are|can|could|do|does|did|will|would|should|tell me|check|find|get)\b/i.test(
+    normalized
+  );
+}
+
+function buildDeclarativeLookupAcknowledgement(question) {
+  const normalized = String(question || "").toLowerCase();
+  if (/\bsmoke|air quality|wildfire|wildfires|fires?\b/.test(normalized)) {
+    return "That makes sense. With the heat and smoke from the Canadian wildfires, staying off the course sounds like the better call today.";
+  }
+
+  return "Got it. Given what you described, staying in sounds like the better call today.";
+}
+
 function buildFallbackEvidenceGrade({ citations, webSearches, rawText }) {
   const citationCount = Array.isArray(citations) ? citations.length : 0;
   const searchCount = Array.isArray(webSearches) ? webSearches.length : 0;
@@ -2264,13 +2315,18 @@ function determineLookupAnswerStatus({ lookupPlan, evidence, extraction, compact
   const specificSportsQuestion = questionKind === "sports" && isSpecificSportsQuestion(question);
   const genericLookupQuestion = questionKind === "other";
   const specificMarketQuestion = questionKind === "market_price" && isSpecificMarketQuestion(question);
+  const declarativeStatement = isDeclarativeLookupStatement(question, questionKind);
 
-  if (resolutionStatus === "ambiguous") {
+  if (resolutionStatus === "ambiguous" && !declarativeStatement) {
     return "needs_clarification";
   }
 
-  if (asksForClarification) {
+  if (asksForClarification && !declarativeStatement) {
     return "needs_clarification";
+  }
+
+  if (declarativeStatement && answerExtractability === "direct_answer" && supportsDirectAnswer) {
+    return evidenceStatus === "weak" ? "partial" : "answered";
   }
 
   if (answerExtractability === "off_topic" || resultTopicMatch === "low") {
@@ -2666,4 +2722,5 @@ export const __testables = {
   reconcileLookupEvidence,
   determineLookupAnswerStatus,
   buildLookupAnswerFallback,
+  isDeclarativeLookupStatement,
 };

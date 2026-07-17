@@ -49,7 +49,7 @@ export function buildProviderDescriptor({
   };
 }
 
-export function buildRoutingCatalog({ providers, routes }) {
+export function buildRoutingCatalog({ providers, routes, readiness = null }) {
   return {
     routes: Object.fromEntries(
       PROVIDER_ROUTE_NAMES.map((route) => [route, routes?.[route] || null])
@@ -61,6 +61,7 @@ export function buildRoutingCatalog({ providers, routes }) {
       voices: structuredClone(provider.voices || {}),
       voiceMetadata: structuredClone(provider.voiceMetadata || {}),
     })),
+    readiness: readiness ? structuredClone(readiness) : null,
   };
 }
 

@@ -17,17 +17,43 @@ const GROQ_PRICING = Object.freeze({
   "canopylabs/orpheus-arabic-saudi": { outputPerMillionCharactersUsd: 40 },
 });
 
-export async function buildModelCatalog() {
+let cachedCatalog = null;
+let cachedAt = 0;
+let refreshPromise = null;
+
+export async function buildModelCatalog({ forceRefresh = false } = {}) {
+  const now = Date.now();
+  if (!forceRefresh && cachedCatalog && now - cachedAt < config.modelCatalogTtlMs) {
+    return withCatalogState(cachedCatalog, "cached");
+  }
+
+  if (refreshPromise) {
+    return refreshPromise;
+  }
+
+  refreshPromise = refreshModelCatalog();
+  try {
+    return await refreshPromise;
+  } finally {
+    refreshPromise = null;
+  }
+}
+
+async function refreshModelCatalog() {
   const [openai, gemini, groq] = await Promise.all([
     listOpenAiModels(),
     listGeminiModels(),
     listGroqModels(),
   ]);
 
-  return {
+  const catalog = {
     generatedAt: new Date().toISOString(),
     providers: [openai, gemini, groq],
   };
+
+  cachedCatalog = catalog;
+  cachedAt = Date.now();
+  return withCatalogState(catalog, "live");
 }
 
 async function listOpenAiModels() {
@@ -45,32 +71,46 @@ async function listOpenAiModels() {
 
   if (config.openAiApiKey) {
     try {
-      const response = await fetch("https://api.openai.com/v1/models", {
+      const response = await fetchWithTimeout("https://api.openai.com/v1/models", {
         headers: { Authorization: `Bearer ${config.openAiApiKey}` },
       });
       if (response.ok) {
         const body = await response.json();
-        models = (body.data || []).map((model) => normalizeModel("openai", model.id));
+        return buildProviderCatalogEntry(
+          "openai",
+          "OpenAI",
+          true,
+          (body.data || []).map((model) => normalizeModel("openai", model.id)),
+          fallbackModels,
+          "live"
+        );
       }
     } catch {
-      models = [];
+      return buildProviderCatalogEntry("openai", "OpenAI", true, [], fallbackModels, "fallback");
     }
   }
 
-  return buildProviderCatalogEntry("openai", "OpenAI", Boolean(config.openAiApiKey), models, fallbackModels);
+  return buildProviderCatalogEntry(
+    "openai",
+    "OpenAI",
+    Boolean(config.openAiApiKey),
+    models,
+    fallbackModels,
+    config.openAiApiKey ? "fallback" : "unavailable"
+  );
 }
 
 async function listGeminiModels() {
   if (!config.geminiApiKey) {
-    return buildProviderCatalogEntry("gemini", "Google Gemini", false, [], []);
+    return buildProviderCatalogEntry("gemini", "Google Gemini", false, [], [], "unavailable");
   }
 
   try {
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(config.geminiApiKey)}`
     );
     if (!response.ok) {
-      return buildProviderCatalogEntry("gemini", "Google Gemini", true, [], []);
+      return buildProviderCatalogEntry("gemini", "Google Gemini", true, [], geminiFallbackModels(), "fallback");
     }
 
     const body = await response.json();
@@ -80,24 +120,26 @@ async function listGeminiModels() {
       true,
       (body.models || [])
         .filter((model) => model.supportedGenerationMethods?.includes("generateContent"))
-        .map((model) => normalizeModel("gemini", model.baseModelId || model.name?.replace(/^models\//, ""), model))
+        .map((model) => normalizeModel("gemini", model.baseModelId || model.name?.replace(/^models\//, ""), model)),
+      geminiFallbackModels(),
+      "live"
     );
   } catch {
-    return buildProviderCatalogEntry("gemini", "Google Gemini", true, [], []);
+    return buildProviderCatalogEntry("gemini", "Google Gemini", true, [], geminiFallbackModels(), "fallback");
   }
 }
 
 async function listGroqModels() {
   if (!config.groqApiKey) {
-    return buildProviderCatalogEntry("groq", "Groq", false, [], []);
+    return buildProviderCatalogEntry("groq", "Groq", false, [], [], "unavailable");
   }
 
   try {
-    const response = await fetch("https://api.groq.com/openai/v1/models", {
+    const response = await fetchWithTimeout("https://api.groq.com/openai/v1/models", {
       headers: { Authorization: `Bearer ${config.groqApiKey}` },
     });
     if (!response.ok) {
-      return buildProviderCatalogEntry("groq", "Groq", true, [], []);
+      return buildProviderCatalogEntry("groq", "Groq", true, [], groqFallbackModels(), "fallback");
     }
 
     const body = await response.json();
@@ -105,14 +147,16 @@ async function listGroqModels() {
       "groq",
       "Groq",
       true,
-      (body.data || []).map((model) => normalizeModel("groq", model.id, model))
+      (body.data || []).map((model) => normalizeModel("groq", model.id, model)),
+      groqFallbackModels(),
+      "live"
     );
   } catch {
-    return buildProviderCatalogEntry("groq", "Groq", true, [], []);
+    return buildProviderCatalogEntry("groq", "Groq", true, [], groqFallbackModels(), "fallback");
   }
 }
 
-function buildProviderCatalogEntry(id, label, configured, models, fallbackModels = []) {
+function buildProviderCatalogEntry(id, label, configured, models, fallbackModels = [], sourceStatus = "unavailable") {
   const merged = new Map(models.map((model) => [model.id, model]));
   for (const modelId of fallbackModels) {
     if (!merged.has(modelId)) {
@@ -124,8 +168,36 @@ function buildProviderCatalogEntry(id, label, configured, models, fallbackModels
     id,
     label,
     configured,
+    sourceStatus,
     pricingSourceUrl: PRICING_SOURCES[id],
     models: [...merged.values()].sort((left, right) => left.id.localeCompare(right.id)),
+  };
+}
+
+function geminiFallbackModels() {
+  return [config.geminiChatModel, config.geminiSummaryModel, config.geminiTtsModel];
+}
+
+function groqFallbackModels() {
+  return [config.groqChatModel, config.groqSttModel, config.groqTtsModel];
+}
+
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.modelCatalogTimeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function withCatalogState(catalog, state) {
+  return {
+    ...catalog,
+    catalogState: state,
+    cachedAt: new Date(cachedAt || Date.now()).toISOString(),
+    providers: catalog.providers.map((provider) => ({ ...provider })),
   };
 }
 

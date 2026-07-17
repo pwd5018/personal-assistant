@@ -21,6 +21,7 @@ import { buildModelCatalog } from "./modelCatalogService.js";
 import {
   getProviderCatalog,
   getRoutingSelections,
+  resetProviderSettings,
   provider,
   resolveProviderRoute,
   saveProviderSettings,
@@ -53,17 +54,39 @@ app.addHook("onClose", async () => {
   summaryScheduler.stop();
 });
 
-app.get("/api/health", async () => ({
-  ok: true,
-  providerConfigured: provider.isConfigured(),
-  providerCatalog: getProviderCatalog(),
-}));
+app.get("/api/health", async () => {
+  const providerCatalog = getProviderCatalog();
+  return {
+    ok: true,
+    providerConfigured: Object.values(providerCatalog.readiness?.providers || {}).some((item) => item.configured),
+    routesReady: Object.values(providerCatalog.readiness?.routes || {}).filter((item) => item.usable).length,
+    providerCatalog,
+  };
+});
 
 app.get("/api/settings/providers", async () => ({
   providerCatalog: getProviderCatalog(),
 }));
 
-app.get("/api/providers/catalog", async () => buildModelCatalog());
+app.get("/api/settings/privacy", async () => ({
+  lookupPrivacyMode: getLookupPrivacyMode(),
+  source: store.getAppSetting("lookup_privacy_mode") ? "saved" : "default",
+}));
+
+app.patch("/api/settings/privacy", async (request, reply) => {
+  const lookupPrivacyMode = normalizePrivacyMode(request.body?.lookupPrivacyMode);
+  if (!lookupPrivacyMode) {
+    reply.code(400);
+    return { error: "lookupPrivacyMode must be strict or balanced." };
+  }
+
+  store.upsertAppSetting("lookup_privacy_mode", lookupPrivacyMode);
+  return { lookupPrivacyMode, source: "saved" };
+});
+
+app.get("/api/providers/catalog", async (request) =>
+  buildModelCatalog({ forceRefresh: request.query?.refresh === "1" })
+);
 
 app.patch("/api/settings/providers", async (request, reply) => {
   try {
@@ -71,6 +94,20 @@ app.patch("/api/settings/providers", async (request, reply) => {
     return {
       providerCatalog: getProviderCatalog(),
       routes,
+    };
+  } catch (error) {
+    reply.code(400);
+    return { error: error.message };
+  }
+});
+
+app.post("/api/settings/providers/reset", async (request, reply) => {
+  try {
+    const routes = request.body?.routes == null ? [] : request.body.routes;
+    const selections = resetProviderSettings(routes);
+    return {
+      providerCatalog: getProviderCatalog(),
+      routes: selections,
     };
   } catch (error) {
     reply.code(400);
@@ -97,10 +134,7 @@ app.post("/api/voice/cancel", async (request, reply) => {
 app.post("/api/voice/retry", async (request, reply) => {
   const { sessionId = "default-session", turnId = randomUUID(), transcriptText = "" } = request.body || {};
   const explainTurnId = typeof request.body?.explainTurnId === "string" ? request.body.explainTurnId.trim() : "";
-  const lookupPrivacyMode =
-    request.body?.lookupPrivacyMode === "balanced" || request.body?.lookupPrivacyMode === "strict"
-      ? request.body.lookupPrivacyMode
-      : null;
+  const lookupPrivacyMode = normalizePrivacyMode(request.body?.lookupPrivacyMode) || getLookupPrivacyMode();
 
   reply.hijack();
   reply.raw.writeHead(200, {
@@ -152,6 +186,7 @@ app.post("/api/voice/retry", async (request, reply) => {
     chatFinalToken: null,
     ttsComplete: null,
     playbackStart: null,
+    routes: {},
   };
 
   await runAssistantTurn({
@@ -282,10 +317,7 @@ app.post("/api/voice/turn", async (request, reply) => {
     const fields = file.fields || {};
     sessionId = fields.sessionId?.value || sessionId;
     activeTurnId = fields.turnId?.value || activeTurnId;
-    const lookupPrivacyMode =
-      fields.lookupPrivacyMode?.value === "balanced" || fields.lookupPrivacyMode?.value === "strict"
-        ? fields.lookupPrivacyMode.value
-        : null;
+    const lookupPrivacyMode = normalizePrivacyMode(fields.lookupPrivacyMode?.value) || getLookupPrivacyMode();
     const explainTurnId = fields.explainTurnId?.value ? String(fields.explainTurnId.value).trim() : "";
 
     const existing = activeTurns.get(sessionId);
@@ -307,17 +339,56 @@ app.post("/api/voice/turn", async (request, reply) => {
       chatFirstToken: null,
       chatFinalToken: null,
       ttsComplete: null,
-      playbackStart: null,
-    };
+    playbackStart: null,
+    routes: {},
+  };
 
     sendEvent({ type: "status", phase: "transcribing", turnId: activeTurnId });
 
-    const transcription = await sttRoute.provider.transcribe({
-      audioBuffer,
-      mimeType: file.mimetype,
-      signal: abortController.signal,
-      model: sttRoute.model,
-    });
+    let transcription;
+    beginRouteTelemetry(timings, "voice.stt", sttRoute);
+    try {
+      transcription = await sttRoute.provider.transcribe({
+        audioBuffer,
+        mimeType: file.mimetype,
+        signal: abortController.signal,
+        model: sttRoute.model,
+      });
+      finishRouteTelemetry(timings, "voice.stt", {
+        status: transcription.text ? "success" : "failed",
+        usage: transcription.usage || null,
+        ...(transcription.text ? {} : { error: { stage: "stt", message: "Transcription was empty." } }),
+      });
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+
+      const failure = { stage: "stt", message: error.message };
+      finishRouteTelemetry(timings, "voice.stt", { status: "failed", error: failure });
+      store.insertTurn(buildStoredTurn({
+        id: activeTurnId,
+        sessionId,
+        transcriptText: "",
+        assistantText: "",
+        status: "stt_failed",
+        contextPackage: buildContextPackage(""),
+        timings,
+        tokenUsage: {},
+          providerMetadata: buildProviderMetadata({
+            failure,
+            routes: getRoutingSelections(),
+            telemetry: buildRouteTelemetry(timings),
+          }),
+        failure,
+        transcriptMimeType: file.mimetype,
+        audioBytes: audioBuffer.byteLength,
+      }));
+      sendEvent({ type: "error", stage: "stt", turnId: activeTurnId, message: error.message });
+      reply.raw.end();
+      activeTurns.delete(sessionId);
+      return;
+    }
 
     timings.sttComplete = new Date().toISOString();
 
@@ -370,7 +441,7 @@ app.post("/api/voice/turn", async (request, reply) => {
     });
     return;
   } catch (error) {
-    const isAbort = error.name === "AbortError";
+    const isAbort = isAbortError(error);
 
     sendEvent({
       type: "error",
@@ -407,7 +478,7 @@ async function runAssistantTurn({
       selfKnowledge: selfKnowledgeResponse?.context || null,
       recentExplainability: selfKnowledgeResponse?.explainability || null,
     });
-    const lookupPlan = selfKnowledgeResponse
+  const lookupPlan = selfKnowledgeResponse
       ? null
       : await buildExternalLookupPlan(transcriptText, contextPackage, lookupPrivacyMode, routing);
 
@@ -476,6 +547,8 @@ async function runAssistantTurn({
           const cachedEntry = store.getLookupCacheEntry(cacheDescriptor.key);
 
           if (cachedEntry && !isLookupCacheEntryExpired(cachedEntry)) {
+            beginRouteTelemetry(timings, "lookup.retrieval", routing["lookup.retrieval"]);
+            finishRouteTelemetry(timings, "lookup.retrieval", { status: "cache_hit" });
             store.touchLookupCacheEntry(cacheDescriptor.key);
             cacheMetadata = {
               ...cacheMetadata,
@@ -507,12 +580,14 @@ async function runAssistantTurn({
         }
 
         if (!lookupArtifacts) {
+          beginRouteTelemetry(timings, "lookup.retrieval", routing["lookup.retrieval"]);
           const freshArtifacts = await performExternalLookupRetrieval({
             question: transcriptText,
             lookupPlan,
             signal: abortController.signal,
             routing,
           });
+          finishRouteTelemetry(timings, "lookup.retrieval", { status: "success", usage: freshArtifacts.usage || null });
           providerUsage = freshArtifacts.usage;
           lookupArtifacts = freshArtifacts;
           if (cacheDescriptor.cacheable) {
@@ -524,11 +599,16 @@ async function runAssistantTurn({
           }
         }
 
+        beginRouteTelemetry(timings, "lookup.composition", routing["lookup.composition"]);
         const lookupResult = await composeExternalLookupResult({
           question: transcriptText,
           lookupPlan,
           artifacts: lookupArtifacts,
           routing,
+        });
+        finishRouteTelemetry(timings, "lookup.composition", {
+          status: "success",
+          usage: lookupResult.usage || null,
         });
 
         assistantText = lookupResult.displayText || lookupResult.text;
@@ -607,7 +687,13 @@ async function runAssistantTurn({
           },
         });
       } catch (error) {
+        if (isAbortError(error)) {
+          throw error;
+        }
+
         const cacheDescriptor = buildLookupCacheDescriptor(lookupPlan);
+        finishRouteTelemetry(timings, "lookup.retrieval", { status: "failed", error: { stage: "lookup", message: error.message } });
+        finishRouteTelemetry(timings, "lookup.composition", { status: "failed", error: { stage: "lookup", message: error.message } });
         providerMetadata = buildProviderMetadata({
           lookup: {
             status: "failed_then_fell_back",
@@ -674,20 +760,55 @@ async function runAssistantTurn({
     if (!assistantText) {
       sendEvent({ type: "status", phase: "thinking", turnId });
 
-      const chatResult = await chatRoute.provider.streamChat({
-        contextPackage,
-        signal: abortController.signal,
-        model: routing.chat?.model,
-        onDelta(delta) {
-          assistantText += delta;
-          if (!timings.chatFirstToken) {
-            timings.chatFirstToken = new Date().toISOString();
-          }
-          sendEvent({ type: "text-delta", delta, turnId });
-        },
-      });
+      beginRouteTelemetry(timings, "chat", chatRoute);
+      try {
+        const chatResult = await chatRoute.provider.streamChat({
+          contextPackage,
+          signal: abortController.signal,
+          model: routing.chat?.model,
+          onDelta(delta) {
+            assistantText += delta;
+            if (!timings.chatFirstToken) {
+              timings.chatFirstToken = new Date().toISOString();
+            }
+            sendEvent({ type: "text-delta", delta, turnId });
+          },
+        });
 
-      providerUsage = chatResult.usage || null;
+        providerUsage = chatResult.usage || null;
+        finishRouteTelemetry(timings, "chat", { status: "success", usage: providerUsage });
+      } catch (error) {
+        if (isAbortError(error)) {
+          throw error;
+        }
+
+        const failure = { stage: "chat", message: error.message };
+        finishRouteTelemetry(timings, "chat", { status: "failed", error: failure });
+        const failedProviderMetadata = buildProviderMetadata({
+          ...providerMetadata,
+          failure,
+          telemetry: buildRouteTelemetry(timings),
+        });
+        store.insertTurn(buildStoredTurn({
+          id: turnId,
+          sessionId,
+          transcriptText,
+          assistantText,
+          status: "chat_failed",
+          contextPackage,
+          timings,
+          tokenUsage: { context: contextPackage.tokenBudget, provider: providerUsage },
+          providerMetadata: failedProviderMetadata,
+          spokenText: "",
+          failure,
+          transcriptMimeType,
+          audioBytes,
+        }));
+        sendEvent({ type: "error", stage: "chat", turnId, message: error.message });
+        reply.raw.end();
+        activeTurns.delete(sessionId);
+        return;
+      }
     }
 
     timings.chatFinalToken = new Date().toISOString();
@@ -698,6 +819,7 @@ async function runAssistantTurn({
     let ttsFailure = null;
     const speechText = spokenAnswerText || assistantText;
 
+    beginRouteTelemetry(timings, "voice.tts", ttsRoute);
     try {
       const speech = await ttsRoute.provider.synthesizeSpeech({
         text: speechText,
@@ -705,6 +827,7 @@ async function runAssistantTurn({
         model: routing["voice.tts"]?.model,
         voice: routing["voice.tts"]?.voice,
       });
+      finishRouteTelemetry(timings, "voice.tts", { status: "success" });
 
       timings.ttsComplete = new Date().toISOString();
       timings.playbackStart = timings.ttsComplete;
@@ -712,15 +835,25 @@ async function runAssistantTurn({
       spokenText = speech.speechInput || "";
       sendEvent({ type: "playback-ready", turnId });
     } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+
       ttsFailure = {
         stage: "tts",
         message: error.message,
       };
+      finishRouteTelemetry(timings, "voice.tts", { status: "failed", error: ttsFailure });
     }
 
     const tokenUsage = {
       context: contextPackage.tokenBudget,
       provider: providerUsage,
+    };
+
+    providerMetadata = {
+      ...providerMetadata,
+      telemetry: buildRouteTelemetry(timings),
     };
 
     const storedTurn = buildStoredTurn({
@@ -769,7 +902,7 @@ async function runAssistantTurn({
     reply.raw.end();
     activeTurns.delete(sessionId);
   } catch (error) {
-    const isAbort = error.name === "AbortError";
+    const isAbort = isAbortError(error);
 
     sendEvent({
       type: "error",
@@ -841,5 +974,57 @@ function buildProviderMetadata(overrides = {}) {
     ttsModel: routing["voice.tts"]?.model,
     routes: routing,
     ...overrides,
+  };
+}
+
+function isAbortError(error) {
+  return error?.name === "AbortError" || error?.code === "ABORT_ERR";
+}
+
+function normalizePrivacyMode(value) {
+  return value === "balanced" || value === "strict" ? value : null;
+}
+
+function getLookupPrivacyMode() {
+  return normalizePrivacyMode(store.getAppSetting("lookup_privacy_mode")?.value) || config.externalLookupPrivacyMode;
+}
+
+function beginRouteTelemetry(timings, route, selection) {
+  if (!timings.routes) timings.routes = {};
+  timings.routes[route] = {
+    provider: selection?.providerId || selection?.provider || null,
+    model: selection?.model || null,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    durationMs: null,
+    status: "running",
+    usage: null,
+    error: null,
+  };
+}
+
+function finishRouteTelemetry(timings, route, { status, usage = null, error = null } = {}) {
+  if (!timings.routes) timings.routes = {};
+  const current = timings.routes[route] || {
+    provider: null,
+    model: null,
+    startedAt: new Date().toISOString(),
+  };
+  const completedAt = new Date().toISOString();
+  const startedAt = new Date(current.startedAt).getTime();
+  timings.routes[route] = {
+    ...current,
+    completedAt,
+    durationMs: Number.isFinite(startedAt) ? Math.max(0, new Date(completedAt).getTime() - startedAt) : null,
+    status: status || "completed",
+    usage,
+    error,
+  };
+}
+
+function buildRouteTelemetry(timings) {
+  return {
+    capturedAt: new Date().toISOString(),
+    routes: timings.routes || {},
   };
 }

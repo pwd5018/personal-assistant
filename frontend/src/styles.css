@@ -199,6 +199,21 @@ label {
   flex-wrap: wrap;
 }
 
+.text-button {
+  margin-top: 12px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.text-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .settings-inventory-section {
   display: grid;
   gap: 16px;
